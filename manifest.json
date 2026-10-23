@@ -1,25 +1,86 @@
 {
+  "id": "./?source=pwa",
   "name": "混賬 Messy Split — 夾錢同行",
   "short_name": "混賬",
   "description": "支援最少步埋單、荊棘鎖鏈催款、AES-GCM 加密金庫與離線記帳的社交分帳 PWA",
-  "start_url": "./index.html",
+  "lang": "zh-HK",
+  "dir": "ltr",
+  "start_url": "./?source=pwa",
   "scope": "./",
   "display": "standalone",
+  "display_override": [
+    "window-controls-overlay",
+    "standalone"
+  ],
   "orientation": "portrait",
   "background_color": "#FAF6F0",
   "theme_color": "#1E293B",
+  "prefer_related_applications": false,
+  "launch_handler": {
+    "client_mode": [
+      "navigate-existing",
+      "auto"
+    ]
+  },
+  "categories": [
+    "finance",
+    "travel",
+    "utilities"
+  ],
   "icons": [
     {
       "src": "./icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
     },
     {
       "src": "./icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "新增消費 / 本地掃單",
+      "short_name": "記帳",
+      "description": "快速新增一筆團體消費或掃描收據",
+      "url": "./?action=new-expense&source=shortcut",
+      "icons": [
+        {
+          "src": "./icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png",
+          "purpose": "any"
+        }
+      ]
+    },
+    {
+      "name": "最少步埋單結算",
+      "short_name": "埋單",
+      "description": "查看最少轉帳路徑與完團報表匯出",
+      "url": "./?action=settlement&source=shortcut",
+      "icons": [
+        {
+          "src": "./icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png",
+          "purpose": "any"
+        }
+      ]
     }
   ]
 }
