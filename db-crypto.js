@@ -1,147 +1,266 @@
 // ============================================================================
-// 《混賬》(Messy Split) v7.0 - 資料庫與軍事級加密金庫模組 (db-crypto.js)
-// 功能：
-// 1. navigator.storage.persist() 申請永久儲存權限（防 iOS 7天清理）
-// 2. IndexedDB (onupgradeneeded) 雙倉庫架構：
-//    - media_vault_store：直接儲存原生二進位 Blob（收據、QR Code、頭像）
-//    - app_state_store：儲存一般狀態與 AES-GCM 加密後的金庫密文
-// 3. Web Crypto API：PBKDF2 (100,000次迭代) 密碼衍生金鑰 + AES-GCM (256-bit)
-//    專門加密：FPS、PayMe、銀行戶口（銀行代碼+帳號+持有人）、QR Code Blob
+// 《混賬》(Messy Split) v7.2 - 資料庫與加密金庫模組 (db-crypto.js)
+// 審計強化內容：
+// 1. [資安] PBKDF2 預設迭代次數提升至 OWASP 標準 600,000 次（並向下相容舊版 100,000 次紀錄）
+// 2. [資安] 新增解密錯誤次數統計與指數退避冷卻機制 (Rate Limiting)，防禦自動化暴力破解
+// 3. [資安] 新增 sanitizeVaultPayload()，強制過濾非 https:// 之 PayMe 連結，阻斷 javascript: XSS
+// 4. [效能] ObjectURL 改以 Map 按資源 ID 與 groupId 精確追蹤，重複讀取與完團清理時零記憶體洩漏
+// 5. [穩定] 全面攔截 QuotaExceededError 並提供密碼強度評估工具 evaluatePasswordStrength()
 // ============================================================================
 
 const DBCrypto = (() => {
+  'use strict';
+
   const DB_NAME = 'MessySplitDB';
   const DB_VERSION = 7;
-  const MEDIA_STORE = 'media_vault_store'; // 原生 Blob 媒體倉
-  const STATE_STORE = 'app_state_store';   // 帳目狀態與加密金庫倉
+  const MEDIA_STORE = 'media_vault_store';
+  const STATE_STORE = 'app_state_store';
   const VAULT_RECORD_KEY = 'encrypted_financial_vault';
 
-  // PBKDF2 參數設定
-  const PBKDF2_ITERATIONS = 100000;
+  // OWASP 2023 PBKDF2-HMAC-SHA256 建議標準為 600,000 次；保留舊版常數供向下相容
+  const PBKDF2_ITERATIONS = 600000;
+  const LEGACY_PBKDF2_ITERATIONS = 100000;
   const SALT_BYTE_LENGTH = 16;
-  const IV_BYTE_LENGTH = 12; // AES-GCM 標準建議 12 bytes (96 bits)
+  const IV_BYTE_LENGTH = 12;
+  const MAX_BLOB_SIZE = 15 * 1024 * 1024; // 15MB
 
   let dbInstance = null;
 
-  // --------------------------------------------------------------------------
-  // 1. 啟動持久化儲存 (navigator.storage.persist)
-  // --------------------------------------------------------------------------
+  // 追蹤所有已建立之 ObjectURL：url -> { id, groupId }
+  const activeObjectURLMap = new Map();
+
+  // 防暴力破解狀態追蹤
+  let failedUnlockCount = 0;
+  let unlockCooldownUntil = 0;
+
   async function initPersistentStorage() {
-    if (navigator.storage && navigator.storage.persist) {
+    if (navigator.storage?.persist) {
       try {
-        const alreadyPersisted = await navigator.storage.persisted();
-        if (alreadyPersisted) return true;
+        if (await navigator.storage.persisted()) return true;
         const granted = await navigator.storage.persist();
-        console.log(`[DBCrypto] 永久儲存權限狀態: ${granted ? '✅ 已鎖定保護' : '⚠️ 系統預設管理'}`);
+        console.log(`[DBCrypto] 永久儲存: ${granted ? '✅ 已鎖定' : '⚠️ 系統管理'}`);
         return granted;
-      } catch (err) {
-        console.warn('[DBCrypto] 無法呼叫 navigator.storage.persist():', err);
+      } catch (e) {
+        console.warn('[DBCrypto] persist 失敗', e);
         return false;
       }
     }
     return false;
   }
 
-  // --------------------------------------------------------------------------
-  // 2. 開啟 IndexedDB 並處理版本升級 (onupgradeneeded)
-  // --------------------------------------------------------------------------
   function openDB() {
     return new Promise((resolve, reject) => {
-      if (dbInstance) return resolve(dbInstance);
-
-      const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-      request.onupgradeneeded = (event) => {
-        const db = event.target.result;
-        console.log(`[DBCrypto] 執行 onupgradeneeded 資料庫結構升級 (v${DB_VERSION})`);
-
-        // 倉庫 A：media_vault_store — 直接儲存原生 Blob 或加密後的二進位物件[cite: 3]
+      if (dbInstance) {
+        try {
+          if (dbInstance.objectStoreNames) return resolve(dbInstance);
+        } catch (_) {}
+        dbInstance = null;
+      }
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        console.log(`[DBCrypto] onupgradeneeded v${DB_VERSION}`);
         if (!db.objectStoreNames.contains(MEDIA_STORE)) {
-          const mediaStore = db.createObjectStore(MEDIA_STORE, { keyPath: 'id' });
-          mediaStore.createIndex('by_group', 'groupId', { unique: false });
-          mediaStore.createIndex('by_created', 'createdAt', { unique: false });
+          const s = db.createObjectStore(MEDIA_STORE, { keyPath: 'id' });
+          s.createIndex('by_group', 'groupId', { unique: false });
+          s.createIndex('by_created', 'createdAt', { unique: false });
+        } else {
+          const tx = e.target.transaction;
+          const store = tx.objectStore(MEDIA_STORE);
+          if (!store.indexNames.contains('by_group')) {
+            store.createIndex('by_group', 'groupId', { unique: false });
+          }
+          if (!store.indexNames.contains('by_created')) {
+            store.createIndex('by_created', 'createdAt', { unique: false });
+          }
         }
-
-        // 倉庫 B：app_state_store — 儲存帳目 JSON 與 AES-GCM 金庫密文[cite: 3]
         if (!db.objectStoreNames.contains(STATE_STORE)) {
           db.createObjectStore(STATE_STORE, { keyPath: 'key' });
         }
       };
-
-      request.onsuccess = (event) => {
-        dbInstance = event.target.result;
+      req.onblocked = () => console.warn('[DBCrypto] DB 升級被阻擋，請關閉其他分頁');
+      req.onsuccess = (e) => {
+        dbInstance = e.target.result;
+        dbInstance.onversionchange = () => {
+          console.warn('[DBCrypto] 版本變更，關閉舊連線');
+          try {
+            dbInstance.close();
+          } catch (_) {}
+          dbInstance = null;
+        };
         resolve(dbInstance);
       };
-
-      request.onerror = (event) => {
-        console.error('[DBCrypto] IndexedDB 開啟失敗:', event.target.error);
-        reject(event.target.error);
+      req.onerror = (e) => {
+        console.error('[DBCrypto] 開啟失敗', e.target.error);
+        reject(e.target.error);
       };
     });
   }
 
-  // --------------------------------------------------------------------------
-  // 3. 密碼學輔助工具：PBKDF2 衍生金鑰 & AES-GCM 加解密核心
-  // --------------------------------------------------------------------------
-  
-  // 產生密碼學安全隨機 Bytes
-  function getRandomBytes(length) {
-    return crypto.getRandomValues(new Uint8Array(length));
+  function getRandomBytes(len) {
+    return crypto.getRandomValues(new Uint8Array(len));
   }
 
-  // 將使用者輸入的密碼 (如 '1234') + Salt 衍生為 256-bit AES-GCM 專用 CryptoKey
-  async function deriveAESKey(password, saltUint8) {
-    const encoder = new TextEncoder();
+  /**
+   * 評估金庫密碼強度：建議至少 8 位且包含英數混合，並標示是否為預設弱密碼 '1234'
+   */
+  function evaluatePasswordStrength(password) {
+    const str = String(password ?? '');
+    const isDefaultPin = str === '1234';
+    const hasLetter = /[A-Za-z]/.test(str);
+    const hasDigit = /\d/.test(str);
+    const isStrong = str.length >= 8 && hasLetter && hasDigit && !isDefaultPin;
+    return {
+      validMinLength: str.length >= 4,
+      isDefaultPin,
+      isStrong,
+      recommendation: isStrong
+        ? '密碼強度良好'
+        : '建議設定至少 8 位英數混合密碼，以防止備份檔遭離線暴力破解'
+    };
+  }
+
+  /**
+   * 清洗與驗證收款金庫資料：強制阻斷 javascript: / data: 等偽協議連結
+   */
+  function sanitizeVaultPayload(rawPayload) {
+    if (!rawPayload || typeof rawPayload !== 'object') return {};
+    const clean = { ...rawPayload };
+
+    if (typeof clean.paymeLink === 'string' && clean.paymeLink.trim() !== '') {
+      const link = clean.paymeLink.trim();
+      if (/^https:\/\/[a-z0-9.-]+\//i.test(link)) {
+        clean.paymeLink = link;
+      } else if (/^payme\.hsbc\//i.test(link)) {
+        clean.paymeLink = 'https://' + link;
+      } else {
+        console.warn('[DBCrypto] 已攔截非 https:// 協定之收款連結');
+        clean.paymeLink = '';
+      }
+    }
+
+    if (typeof clean.fpsId === 'string') clean.fpsId = clean.fpsId.trim().slice(0, 64);
+    if (typeof clean.bankCode === 'string') clean.bankCode = clean.bankCode.trim().slice(0, 16);
+    if (typeof clean.bankAccount === 'string') clean.bankAccount = clean.bankAccount.trim().slice(0, 32);
+    if (typeof clean.holderName === 'string') clean.holderName = clean.holderName.trim().slice(0, 64);
+
+    return clean;
+  }
+
+  function checkUnlockRateLimit() {
+    const now = Date.now();
+    if (now < unlockCooldownUntil) {
+      const waitSec = Math.ceil((unlockCooldownUntil - now) / 1000);
+      throw new Error(`嘗試次數過多，請等待 ${waitSec} 秒後再試`);
+    }
+  }
+
+  function recordUnlockFailure() {
+    failedUnlockCount += 1;
+    if (failedUnlockCount >= 5) {
+      const lockMs = Math.min(60000, Math.pow(2, failedUnlockCount - 5) * 3000);
+      unlockCooldownUntil = Date.now() + lockMs;
+    }
+  }
+
+  function resetUnlockFailure() {
+    failedUnlockCount = 0;
+    unlockCooldownUntil = 0;
+  }
+
+  async function deriveAESKey(password, saltUint8, iterations = PBKDF2_ITERATIONS) {
+    const safeIterations =
+      Number.isFinite(Number(iterations)) && Number(iterations) >= 10000
+        ? Number(iterations)
+        : LEGACY_PBKDF2_ITERATIONS;
+
+    const enc = new TextEncoder();
     const keyMaterial = await crypto.subtle.importKey(
       'raw',
-      encoder.encode(String(password)),
+      enc.encode(String(password)),
       { name: 'PBKDF2' },
       false,
       ['deriveKey']
     );
-
     return crypto.subtle.deriveKey(
-      {
-        name: 'PBKDF2',
-        salt: saltUint8,
-        iterations: PBKDF2_ITERATIONS,
-        hash: 'SHA-256'
-      },
+      { name: 'PBKDF2', salt: saltUint8, iterations: safeIterations, hash: 'SHA-256' },
       keyMaterial,
       { name: 'AES-GCM', length: 256 },
-      false, // 金鑰不可被匯出 (non-extractable)，防止記憶體外洩
+      false,
       ['encrypt', 'decrypt']
     );
   }
 
-  // --------------------------------------------------------------------------
-  // 4. 加密與解密收款金庫文字資料 (FPS / PayMe / 銀行下拉選單+帳號+持有人)
-  // --------------------------------------------------------------------------
+  // ==========================================================================
+  // ObjectURL 精確追蹤與回收管理 (依資源 id 與 groupId 分類，徹底防止記憶體洩漏)
+  // ==========================================================================
+  function trackObjectURL(url, id = null, groupId = null) {
+    if (id) {
+      for (const [existingUrl, meta] of activeObjectURLMap.entries()) {
+        if (meta.id === id) {
+          try {
+            URL.revokeObjectURL(existingUrl);
+          } catch (_) {}
+          activeObjectURLMap.delete(existingUrl);
+        }
+      }
+    }
+    activeObjectURLMap.set(url, { id, groupId });
+    return url;
+  }
 
-  /**
-   * 加密並儲存個人收款金庫到 IndexedDB (app_state_store)
-   * @param {string} password - 用戶金庫密碼 (如 '1234')
-   * @param {Object} vaultData - 包含 { fpsId, paymeLink, bankCode, bankAccount, holderName, qrMediaId }
-   */
+  function revokeObjectURL(url) {
+    if (!url) return;
+    try {
+      URL.revokeObjectURL(url);
+      activeObjectURLMap.delete(url);
+    } catch (_) {}
+  }
+
+  function revokeGroupObjectURLs(groupId) {
+    if (!groupId) return;
+    for (const [url, meta] of activeObjectURLMap.entries()) {
+      if (meta.groupId === groupId) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch (_) {}
+        activeObjectURLMap.delete(url);
+      }
+    }
+  }
+
+  function revokeAllObjectURLs() {
+    for (const url of activeObjectURLMap.keys()) {
+      try {
+        URL.revokeObjectURL(url);
+      } catch (_) {}
+    }
+    activeObjectURLMap.clear();
+  }
+
+  // ==========================================================================
+  // 個人收款金庫加解密 (PBKDF2 600,000 次 + AES-GCM 256-bit)
+  // ==========================================================================
   async function saveEncryptedVault(password, vaultData) {
+    const strength = evaluatePasswordStrength(password);
+    if (!strength.validMinLength) {
+      throw new Error('金庫密碼至少需 4 位字元');
+    }
+    if (!strength.isStrong) {
+      console.warn('[DBCrypto] 資安提示：', strength.recommendation);
+    }
+
+    const sanitizedData = sanitizeVaultPayload(vaultData);
     const db = await openDB();
     const salt = getRandomBytes(SALT_BYTE_LENGTH);
     const iv = getRandomBytes(IV_BYTE_LENGTH);
-    const aesKey = await deriveAESKey(password, salt);
-
-    const encoder = new TextEncoder();
-    const plaintextBytes = encoder.encode(JSON.stringify(vaultData));
-
-    // 執行 AES-GCM 256-bit 加密 (自帶完整性驗證 Auth Tag，密碼錯或被竄改會直接拋錯)
-    const ciphertextBuffer = await crypto.subtle.encrypt(
-      { name: 'AES-GCM', iv },
-      aesKey,
-      plaintextBytes
-    );
+    const aesKey = await deriveAESKey(password, salt, PBKDF2_ITERATIONS);
+    const pt = new TextEncoder().encode(JSON.stringify(sanitizedData));
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, aesKey, pt);
 
     const record = {
       key: VAULT_RECORD_KEY,
-      cipher: new Uint8Array(ciphertextBuffer), // 直接以二進位 Uint8Array 存入 IndexedDB
+      cipher: new Uint8Array(ct),
       iv,
       salt,
       iterations: PBKDF2_ITERATIONS,
@@ -151,78 +270,83 @@ const DBCrypto = (() => {
     return new Promise((resolve, reject) => {
       const tx = db.transaction([STATE_STORE], 'readwrite');
       tx.objectStore(STATE_STORE).put(record);
-      tx.oncomplete = () => resolve({ success: true, updatedAt: record.updatedAt });
-      tx.onerror = (e) => reject(e.target.error);
+      tx.oncomplete = () =>
+        resolve({
+          success: true,
+          updatedAt: record.updatedAt,
+          passwordStrength: strength
+        });
+      tx.onerror = (e) => {
+        if (e.target.error?.name === 'QuotaExceededError') {
+          reject(new Error('裝置儲存空間不足，請先清理舊收據'));
+        } else {
+          reject(e.target.error);
+        }
+      };
     });
   }
 
-  /**
-   * 輸入密碼解鎖並讀取個人收款金庫
-   * @param {string} password - 用戶輸入的解鎖密碼
-   * @returns {Promise<Object>} 解密後的收款資料物件
-   */
   async function unlockEncryptedVault(password) {
-    const db = await openDB();
+    checkUnlockRateLimit();
 
+    const db = await openDB();
     const record = await new Promise((resolve, reject) => {
       const tx = db.transaction([STATE_STORE], 'readonly');
       const req = tx.objectStore(STATE_STORE).get(VAULT_RECORD_KEY);
       req.onsuccess = () => resolve(req.result || null);
       req.onerror = (e) => reject(e.target.error);
     });
-
-    if (!record) {
-      return null; // 尚未建立過加密金庫
-    }
+    if (!record) return null;
 
     try {
-      const aesKey = await deriveAESKey(password, record.salt);
-      const decryptedBuffer = await crypto.subtle.decrypt(
+      const iters = record.iterations || LEGACY_PBKDF2_ITERATIONS;
+      const aesKey = await deriveAESKey(password, record.salt, iters);
+      const ptBuf = await crypto.subtle.decrypt(
         { name: 'AES-GCM', iv: record.iv },
         aesKey,
         record.cipher
       );
-
-      const decoder = new TextDecoder();
-      return JSON.parse(decoder.decode(decryptedBuffer));
-    } catch (err) {
-      // AES-GCM 若密碼錯誤，會在 decrypt 階段拋出 OperationError
+      resetUnlockFailure();
+      const parsed = JSON.parse(new TextDecoder().decode(ptBuf));
+      return sanitizeVaultPayload(parsed);
+    } catch (_) {
+      recordUnlockFailure();
       throw new Error('INVALID_VAULT_PASSWORD');
     }
   }
 
-  // --------------------------------------------------------------------------
-  // 5. 原生 Blob 媒體倉管理 (收據單據 & 加密版收款 QR Code Blob)
-  // --------------------------------------------------------------------------
-
-  /**
-   * 將一般單據或頭像直接以原生 Blob 存入 media_vault_store (不轉 Base64)[cite: 3]
-   */
+  // ==========================================================================
+  // 單據原生 Blob 與加密收款 QR Code 存取
+  // ==========================================================================
   async function saveBlobToMediaVault(id, blob, groupId = 'default') {
-    if (!(blob instanceof Blob)) {
-      throw new Error('傳入的資料必須是原生 Blob 或 File 物件');
+    if (!(blob instanceof Blob)) throw new Error('必須是 Blob 或 File 物件');
+    if (blob.size > MAX_BLOB_SIZE) {
+      throw new Error(`單據超過 ${MAX_BLOB_SIZE / 1024 / 1024}MB 上限`);
     }
     const db = await openDB();
     return new Promise((resolve, reject) => {
       const tx = db.transaction([MEDIA_STORE], 'readwrite');
-      const record = {
+      const rec = {
         id,
-        blob, // 直接存原生 Blob[cite: 3]
+        blob,
         mimeType: blob.type || 'image/webp',
         sizeKB: Math.round(blob.size / 1024),
         encrypted: false,
         groupId,
         createdAt: Date.now()
       };
-      tx.objectStore(MEDIA_STORE).put(record);
-      tx.oncomplete = () => resolve(record);
-      tx.onerror = (e) => reject(e.target.error);
+      tx.objectStore(MEDIA_STORE).put(rec);
+      tx.oncomplete = () => resolve(rec);
+      tx.onerror = (e) => {
+        if (e.target.error?.name === 'QuotaExceededError') {
+          reject(new Error('儲存空間已滿，請於埋單頁清除舊團收據 Blob'));
+        } else {
+          reject(e.target.error);
+        }
+      };
     });
   }
 
-  /**
-   * 讀取一般單據 Blob 並回傳可用於 <img src="..."> 的 ObjectURL[cite: 3]
-   */
   async function loadBlobObjectURL(id) {
     const db = await openDB();
     return new Promise((resolve, reject) => {
@@ -230,8 +354,8 @@ const DBCrypto = (() => {
       const req = tx.objectStore(MEDIA_STORE).get(id);
       req.onsuccess = () => {
         const res = req.result;
-        if (res && res.blob instanceof Blob) {
-          resolve(URL.createObjectURL(res.blob));
+        if (res?.blob instanceof Blob) {
+          resolve(trackObjectURL(URL.createObjectURL(res.blob), id, res.groupId || 'default'));
         } else {
           resolve(null);
         }
@@ -240,49 +364,52 @@ const DBCrypto = (() => {
     });
   }
 
-  /**
-   * 【專屬保護】將收款 QR Code 原生 Blob 進行 AES-GCM 加密後存入 media_vault_store
-   * 即使有人打開瀏覽器 DevTools 查看 IndexedDB，也無法直接預覽你的收款 QR Code 圖片
-   */
   async function saveEncryptedQRBlob(id, qrBlob, password) {
+    if (!(qrBlob instanceof Blob)) throw new Error('必須是 Blob 物件');
+    if (!password || String(password).length < 4) {
+      throw new Error('加密收款 QR 需要至少 4 位金庫密碼');
+    }
+    if (qrBlob.size > MAX_BLOB_SIZE) {
+      throw new Error(`圖片超過 ${MAX_BLOB_SIZE / 1024 / 1024}MB 上限`);
+    }
+
     const db = await openDB();
     const salt = getRandomBytes(SALT_BYTE_LENGTH);
     const iv = getRandomBytes(IV_BYTE_LENGTH);
-    const aesKey = await deriveAESKey(password, salt);
-
-    const rawArrayBuffer = await qrBlob.arrayBuffer();
-    const encryptedBuffer = await crypto.subtle.encrypt(
-      { name: 'AES-GCM', iv },
-      aesKey,
-      rawArrayBuffer
-    );
-
-    // 將加密後的密文包裝為 application/octet-stream 原生 Blob 存入 media_vault_store
-    const encryptedBlob = new Blob([encryptedBuffer], { type: 'application/octet-stream' });
+    const aesKey = await deriveAESKey(password, salt, PBKDF2_ITERATIONS);
+    const raw = await qrBlob.arrayBuffer();
+    const encBuf = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, aesKey, raw);
+    const encBlob = new Blob([encBuf], { type: 'application/octet-stream' });
 
     return new Promise((resolve, reject) => {
       const tx = db.transaction([MEDIA_STORE], 'readwrite');
-      const record = {
+      const rec = {
         id,
-        blob: encryptedBlob, // 依然是原生 Blob，但內容已是 AES-GCM 密文
+        blob: encBlob,
         originalMimeType: qrBlob.type || 'image/webp',
-        sizeKB: Math.round(encryptedBlob.size / 1024),
+        sizeKB: Math.round(encBlob.size / 1024),
         encrypted: true,
         iv,
         salt,
+        iterations: PBKDF2_ITERATIONS,
         groupId: 'private_vault',
         createdAt: Date.now()
       };
-      tx.objectStore(MEDIA_STORE).put(record);
-      tx.oncomplete = () => resolve(record);
-      tx.onerror = (e) => reject(e.target.error);
+      tx.objectStore(MEDIA_STORE).put(rec);
+      tx.oncomplete = () => resolve(rec);
+      tx.onerror = (e) => {
+        if (e.target.error?.name === 'QuotaExceededError') {
+          reject(new Error('裝置儲存空間不足'));
+        } else {
+          reject(e.target.error);
+        }
+      };
     });
   }
 
-  /**
-   * 輸入密碼解密收款 QR Code Blob，並回傳可顯示的圖片 ObjectURL
-   */
   async function loadEncryptedQRBlobURL(id, password) {
+    checkUnlockRateLimit();
+
     const db = await openDB();
     const record = await new Promise((resolve, reject) => {
       const tx = db.transaction([MEDIA_STORE], 'readonly');
@@ -290,66 +417,79 @@ const DBCrypto = (() => {
       req.onsuccess = () => resolve(req.result || null);
       req.onerror = (e) => reject(e.target.error);
     });
-
-    if (!record || !record.blob) return null;
+    if (!record?.blob) return null;
     if (!record.encrypted) {
-      return URL.createObjectURL(record.blob);
+      return trackObjectURL(URL.createObjectURL(record.blob), id, record.groupId || 'private_vault');
     }
 
     try {
-      const aesKey = await deriveAESKey(password, record.salt);
-      const cipherBuffer = await record.blob.arrayBuffer();
-      const decryptedBuffer = await crypto.subtle.decrypt(
+      const iters = record.iterations || LEGACY_PBKDF2_ITERATIONS;
+      const aesKey = await deriveAESKey(password, record.salt, iters);
+      const cipherBuf = await record.blob.arrayBuffer();
+      const plainBuf = await crypto.subtle.decrypt(
         { name: 'AES-GCM', iv: record.iv },
         aesKey,
-        cipherBuffer
+        cipherBuf
       );
-
-      const restoredBlob = new Blob([decryptedBuffer], {
-        type: record.originalMimeType || 'image/webp'
-      });
-      return URL.createObjectURL(restoredBlob);
-    } catch (err) {
+      resetUnlockFailure();
+      const restored = new Blob([plainBuf], { type: record.originalMimeType || 'image/webp' });
+      return trackObjectURL(URL.createObjectURL(restored), id, 'private_vault');
+    } catch (_) {
+      recordUnlockFailure();
       throw new Error('INVALID_QR_PASSWORD');
     }
   }
 
-  // --------------------------------------------------------------------------
-  // 6. 完團一鍵清除特定群組的所有單據 Blob (釋放空間 & 保護私隱)
-  // --------------------------------------------------------------------------
   async function purgeGroupMediaBlobs(groupId) {
     const db = await openDB();
+    // 同步釋放該群組所有已建立的預覽圖 ObjectURL，消除記憶體洩漏
+    revokeGroupObjectURLs(groupId);
+
     return new Promise((resolve, reject) => {
       const tx = db.transaction([MEDIA_STORE], 'readwrite');
       const store = tx.objectStore(MEDIA_STORE);
-      const index = store.index('by_group');
-      const req = index.openCursor(IDBKeyRange.only(groupId));
-      let deletedCount = 0;
-
-      req.onsuccess = (event) => {
-        const cursor = event.target.result;
-        if (cursor) {
-          cursor.delete();
-          deletedCount++;
-          cursor.continue();
+      const idx = store.index('by_group');
+      const req = idx.openCursor(IDBKeyRange.only(groupId));
+      let count = 0;
+      req.onsuccess = (e) => {
+        const cur = e.target.result;
+        if (cur) {
+          cur.delete();
+          count++;
+          cur.continue();
         }
       };
-
-      tx.oncomplete = () => resolve(deletedCount);
+      tx.oncomplete = () => resolve(count);
       tx.onerror = (e) => reject(e.target.error);
     });
   }
 
-  // 對外公開 API
+  async function deleteVault() {
+    const db = await openDB();
+    revokeGroupObjectURLs('private_vault');
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction([STATE_STORE], 'readwrite');
+      tx.objectStore(STATE_STORE).delete(VAULT_RECORD_KEY);
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = (e) => reject(e.target.error);
+    });
+  }
+
   return {
     initPersistentStorage,
     openDB,
+    evaluatePasswordStrength,
+    sanitizeVaultPayload,
     saveEncryptedVault,
     unlockEncryptedVault,
     saveBlobToMediaVault,
     loadBlobObjectURL,
     saveEncryptedQRBlob,
     loadEncryptedQRBlobURL,
-    purgeGroupMediaBlobs
+    purgeGroupMediaBlobs,
+    revokeObjectURL,
+    revokeGroupObjectURLs,
+    revokeAllObjectURLs,
+    deleteVault
   };
 })();

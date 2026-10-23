@@ -1,0 +1,3050 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>混賬 Messy Split v7.2 — 夾錢同行 PWA 正式版</title>
+
+  <!-- PWA 設定與桌面圖示 -->
+  <link rel="manifest" href="./manifest.json">
+  <meta name="theme-color" content="#1E293B">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="混賬">
+  <!-- [資安強化] 邀請碼 QR 100% 本地生成，CSP 僅放行必要同源與白名單資源 -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://open.er-api.com; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob: https://cdn.tailwindcss.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; img-src 'self' data: blob:; connect-src 'self' data: blob: https://open.er-api.com https://cdn.jsdelivr.net https://tessdata.projectnaptha.com; worker-src 'self' blob:; base-uri 'self'; form-action 'self';">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+
+  <!-- Tailwind CSS - 建議生產環境改為本地編譯的 tailwind.css 以符合最佳效能 -->
+  <script src="https://cdn.tailwindcss.com" crossorigin="anonymous"></script>
+
+  <style>
+    /* ======================================================================
+       原生保底 CSS（防止外部網路延遲或 CDN 阻擋導致彈窗疊加卡死畫面）
+       ====================================================================== */
+    :root {
+      --shell-max-width: 430px;
+      --bg-cream: #FAF6F0;
+      --ink-dark: #1E293B;
+      --brand-orange: #EA580C;
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    button, .dock-btn { user-select: none; }
+    input, textarea, select { user-select: text; }
+    .hidden {
+      display: none !important;
+    }
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #E2E8F0;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang HK", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+      color: var(--ink-dark);
+      display: flex;
+      justify-content: center;
+      min-height: 100vh;
+    }
+    /* 手機主外框容器 */
+    #appShell {
+      width: 100%;
+      max-width: var(--shell-max-width);
+      min-height: 100vh;
+      background-color: var(--bg-cream);
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 20px 50px rgba(15, 23, 42, 0.18);
+      overflow-x: hidden;
+      padding-bottom: 88px;
+    }
+    /* 隱藏橫向捲軸但保留滑動 */
+    .no-scrollbar::-webkit-scrollbar {
+      display: none;
+    }
+    .no-scrollbar {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+    /* 彈窗遮罩保底定位 */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.6);
+      backdrop-filter: blur(4px);
+      z-index: 60;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    /* 荊棘鎖鏈狀態環 (欠款人紅刺鎖鏈 vs 清白花環) */
+    .avatar-ring-clean {
+      border: 3px solid #10B981;
+      box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.2);
+    }
+    .avatar-ring-pending {
+      border: 3px dashed #F59E0B;
+      box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.25);
+    }
+    .avatar-ring-debt {
+      border: 3px solid #DC2626;
+      box-shadow: 0 0 0 4px rgba(220, 38, 38, 0.28);
+      animation: pulse-thorn 2s infinite;
+    }
+    @keyframes pulse-thorn {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.04); }
+    }
+    /* 底部懸浮導航列 */
+    .bottom-dock {
+      position: fixed;
+      bottom: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: calc(min(100vw, var(--shell-max-width)) - 24px);
+      background: rgba(30, 41, 59, 0.95);
+      backdrop-filter: blur(12px);
+      border-radius: 22px;
+      padding: 6px 8px;
+      z-index: 45;
+      display: flex;
+      justify-content: space-around;
+      align-items: center;
+      box-shadow: 0 10px 25px rgba(15, 23, 42, 0.35);
+    }
+    .dock-btn {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 6px 2px;
+      border-radius: 14px;
+      color: #94A3B8;
+      font-size: 11px;
+      font-weight: 700;
+      transition: all 0.2s;
+      position: relative;
+    }
+    .dock-btn.active {
+      background: #EA580C;
+      color: #FFFFFF;
+      transform: translateY(-2px);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ==================== 手機主容器 (#appShell) ==================== -->
+  <div id="appShell">
+
+    <!-- 1. 頂部品牌與工具導航列 -->
+    <header class="sticky top-0 z-30 bg-[#1E293B] text-white px-4 py-3 flex items-center justify-between shadow-md">
+      <div class="flex items-center gap-2.5">
+        <img src="./icon-192.png" alt="混賬" class="w-9 h-9 rounded-full border-2 border-amber-300 object-cover bg-amber-100"
+             onerror="this.style.display='none'; document.getElementById('fallbackLogo').classList.remove('hidden');">
+        <div id="fallbackLogo" class="hidden w-9 h-9 rounded-full bg-orange-600 flex items-center justify-center font-black text-sm border-2 border-amber-300">混</div>
+        <div>
+          <div class="flex items-center gap-1.5">
+            <span class="font-black text-base tracking-wide">混賬</span>
+            <span class="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-400/40 px-1.5 py-0.5 rounded-full font-bold">v7.2 正式版</span>
+          </div>
+          <div id="storagePersistBadge" class="text-[10px] text-slate-300 flex items-center gap-1">
+            <span>🛡️ 本地加密金庫就緒</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-1.5">
+        <button id="pwaInstallBtn" onclick="triggerPWAInstall()" class="hidden text-xs bg-amber-500 hover:bg-amber-600 text-slate-950 font-black px-2.5 py-1.5 rounded-lg shadow">
+          📲 安裝App
+        </button>
+        <button onclick="switchTab('legal')" aria-label="查看香港法規與私隱聲明" class="text-xs bg-slate-700 hover:bg-slate-600 px-2.5 py-1.5 rounded-lg font-bold">
+          ⚖️ 法規與私隱
+        </button>
+      </div>
+    </header>
+
+    <!-- 2. 當前群組標題列與團友荊棘頭像列 -->
+    <section class="bg-gradient-to-b from-amber-50/90 to-[#FAF6F0] px-4 pt-3 pb-2 border-b border-amber-200/70">
+      <div class="flex items-center justify-between mb-2">
+        <div class="flex items-center gap-1.5">
+          <span class="text-xs font-bold text-orange-800 bg-orange-100 px-2 py-0.5 rounded-md">當前群組</span>
+          <h1 id="currentGroupTitle" class="font-black text-base text-slate-800 truncate max-w-[175px]">東京賞楓美食團 🍁</h1>
+          <button onclick="showHelpTip('群組與荊棘鎖鏈機制', '頭像外框代表即時結算狀態：\n🌿 綠框：已結清無欠款\n⏳ 黃虛線：已付款待債主確認\n🥀 紅刺鎖鏈：尚有欠款待找數（點頭像可看明細，點自己頭像可換動物外觀）。')"
+                  aria-label="群組與荊棘鎖鏈機制說明" class="text-xs text-slate-400 hover:text-slate-700 font-bold px-1">ⓘ</button>
+        </div>
+        <div class="text-right flex flex-col items-end">
+          <button onclick="manualRefreshDailyRates()" title="點擊查看或更新當日匯率"
+                  id="currentGroupRateBadge" class="text-[11px] font-bold bg-slate-800 text-amber-300 px-2 py-0.5 rounded-full flex items-center gap-1">
+            <span>JPY 匯率 0.052</span>
+          </button>
+          <span id="rateSyncStatusLabel" class="text-[9px] text-slate-400 mt-0.5">每日 02:12 自動更新</span>
+        </div>
+      </div>
+
+      <!-- 橫向滑動團友頭像列 -->
+      <div id="groupAvatarBar" class="flex items-center gap-3 overflow-x-auto no-scrollbar py-1.5"></div>
+    </section>
+
+    <!-- 3. 主內容分頁容器 -->
+    <main class="flex-1 px-4 py-3 space-y-4">
+
+      <!-- ==================== [分頁 A] 🧾 記賬與公數池 (Tab: ledger) ==================== -->
+      <div id="tab-ledger" class="space-y-4">
+
+        <!-- 公數資金池卡片 -->
+        <div class="bg-gradient-to-r from-amber-500 to-orange-600 text-white rounded-2xl p-4 shadow-md relative overflow-hidden">
+          <div class="flex justify-between items-start">
+            <div>
+              <div class="flex items-center gap-1 text-xs font-bold text-amber-100">
+                <span>💰 公數資金池結餘</span>
+                <button onclick="showHelpTip('公數資金池 (Common Pool)', '團友預先夾錢放入公數池，記帳時可勾選「由公數池支付」。完團時可在埋單頁開啟「將公數餘額納入最終結算」自動計算多退少補！')"
+                        aria-label="公數資金池說明" class="text-white/80 hover:text-white font-black">ⓘ</button>
+              </div>
+              <div id="poolBalanceDisplay" class="text-2xl font-black mt-0.5">JPY 15,000</div>
+              <div id="poolBalanceHKDDisplay" class="text-xs text-amber-100 mt-0.5">約折合 HK$ 780.00</div>
+            </div>
+            <div class="flex flex-col gap-1.5 items-end">
+              <button onclick="openPoolTopupModal()" class="bg-white text-orange-700 hover:bg-amber-50 font-black text-xs px-3 py-1.5 rounded-xl shadow-sm">
+                ＋ 注資公數
+              </button>
+              <button onclick="openAddExpenseModal()" class="bg-slate-900/90 hover:bg-slate-900 text-amber-300 font-black text-xs px-3 py-1.5 rounded-xl shadow-sm">
+                📷 掃描/記一筆
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 快捷操作列 -->
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-1.5">
+            <h2 class="font-black text-sm text-slate-800">🧾 消費賬單明細</h2>
+            <span id="expenseCountBadge" class="text-[11px] bg-slate-200 text-slate-700 font-bold px-2 py-0.5 rounded-full">0 筆</span>
+          </div>
+          <button onclick="openAddExpenseModal()" class="bg-orange-600 hover:bg-orange-700 text-white font-black text-xs px-3.5 py-2 rounded-xl shadow flex items-center gap-1">
+            <span>＋ 新增消費 / 本地 OCR</span>
+          </button>
+        </div>
+
+        <!-- 賬單列表 -->
+        <div id="expenseListContainer" class="space-y-2.5"></div>
+      </div>
+
+      <!-- ==================== [分頁 B] ⚡ 最少步埋單與完團匯出 (Tab: settle) ==================== -->
+      <div id="tab-settle" class="hidden space-y-4">
+
+        <!-- 公數池結餘納入最終結算開關卡 -->
+        <div class="bg-amber-50/90 rounded-2xl p-3.5 shadow-sm border border-amber-200 flex items-center justify-between gap-3">
+          <div>
+            <div class="text-xs font-black text-amber-950 flex items-center gap-1">
+              <span>💰 將公數池餘額納入最終結算退還</span>
+              <button onclick="showHelpTip('公數餘額多退少補', '開啟後，系統會將目前公數池剩餘的結餘按團友注資比例（預設全員平分）退還，直接抵扣個人欠款或增加應收金額！')"
+                      aria-label="公數餘額多退少補說明" class="text-amber-700 font-bold">ⓘ</button>
+            </div>
+            <div id="settlePoolRefundHint" class="text-[11px] text-amber-800 mt-0.5">目前公數結餘：JPY 15,000</div>
+          </div>
+          <label class="inline-flex items-center cursor-pointer shrink-0">
+            <input id="includePoolToggle" type="checkbox" class="w-4 h-4 accent-orange-600 rounded" onchange="toggleIncludePoolInSettlement(this.checked)">
+            <span class="ml-1.5 text-xs font-black text-orange-800">納入結算</span>
+          </label>
+        </div>
+
+        <!-- 最少步埋單說明與按鈕 -->
+        <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80 space-y-3">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-1.5">
+              <h2 class="font-black text-base text-slate-800">⚡ 最少步埋單行動表</h2>
+              <button onclick="showHelpTip('最少步埋單演算法', '系統自動將全團複雜的交叉欠款化簡為最少轉帳次數！欠款人點擊「立即找數」可查看債主金庫收款碼並發送跨機破鎖連結，債主按「確認收妥」即可砍斷荊棘鎖鏈！')"
+                      aria-label="最少步埋單演算法說明" class="text-xs text-slate-400 font-bold">ⓘ</button>
+            </div>
+            <span class="text-[11px] bg-orange-100 text-orange-800 font-bold px-2.5 py-0.5 rounded-full">自動抵銷交叉債務</span>
+          </div>
+
+          <div id="settlementListContainer" class="space-y-2.5"></div>
+        </div>
+
+        <!-- 多退少補個人淨額表 -->
+        <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80 space-y-2.5">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-1">
+              <h3 class="font-black text-sm text-slate-800">📊 團友多退少補淨額明細</h3>
+              <button onclick="showHelpTip('多退少補計算公式', '正數（綠色）代表墊支多於應付，屬於應收債主；負數（紅色）代表應付多於墊支，需拿錢出來找數。')"
+                      aria-label="多退少補計算公式說明" class="text-xs text-slate-400 font-bold">ⓘ</button>
+            </div>
+            <span class="text-[11px] text-slate-500">折合港幣 (HK$)</span>
+          </div>
+          <div id="netBalanceListContainer" class="space-y-2"></div>
+        </div>
+
+        <!-- 完團報表匯出 (PDF / Excel / CSV) 與一鍵清理單據 -->
+        <div class="bg-slate-900 text-white rounded-2xl p-4 shadow-md space-y-3">
+          <div class="flex items-center justify-between">
+            <div>
+              <h3 class="font-black text-sm text-amber-300">📤 完團資料匯出與單據清理</h3>
+              <p class="text-[11px] text-slate-300 mt-0.5">支援 UTF-8 BOM 繁體中文、自訂加項備註及日圓符號直開</p>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-3 gap-2">
+            <button onclick="handleExportReport('pdf')" class="bg-rose-600 hover:bg-rose-500 text-white font-black text-xs py-2.5 px-2 rounded-xl flex flex-col items-center gap-1 shadow">
+              <span class="text-base">📄</span>
+              <span>匯出 PDF</span>
+            </button>
+            <button onclick="handleExportReport('excel')" class="bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs py-2.5 px-2 rounded-xl flex flex-col items-center gap-1 shadow">
+              <span class="text-base">📊</span>
+              <span>匯出 Excel</span>
+            </button>
+            <button onclick="handleExportReport('csv')" class="bg-sky-600 hover:bg-sky-500 text-white font-black text-xs py-2.5 px-2 rounded-xl flex flex-col items-center gap-1 shadow">
+              <span class="text-base">📑</span>
+              <span>匯出 CSV</span>
+            </button>
+          </div>
+
+          <div class="text-[10px] text-slate-400 bg-slate-800/80 p-2 rounded-lg leading-relaxed">
+            🔒 <strong>私隱提醒：</strong>匯出之報表包含團友名稱與消費明細，請僅限於群組成員內部核對使用，切勿公開發布至公眾網路，以免觸犯香港《個人資料（私隱）條例》（第 486 章）。
+          </div>
+
+          <div class="pt-2 border-t border-slate-700 flex items-center justify-between">
+            <span class="text-[11px] text-slate-300">完團後釋放手機空間並銷毀敏感單據：</span>
+            <button onclick="handlePurgeGroupMedia()" class="bg-slate-700 hover:bg-red-700 text-amber-200 hover:text-white text-xs font-bold px-3 py-1.5 rounded-lg transition">
+              🧹 完團清除收據 Blob
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ==================== [分頁 C] 👥 群組與好友管理 (Tab: groups) ==================== -->
+      <div id="tab-groups" class="hidden space-y-4">
+
+        <!-- 我的專屬邀請碼與好友列 -->
+        <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80 space-y-3">
+          <div class="flex items-center justify-between">
+            <div>
+              <span class="text-[10px] font-bold bg-amber-100 text-amber-900 px-2 py-0.5 rounded">我的專屬混賬邀請碼</span>
+              <div class="font-black text-base text-slate-800 mt-0.5" id="myUserIdDisplay">MS-8F9A-22K1</div>
+            </div>
+            <button onclick="openAddFriendModal()" class="bg-orange-600 hover:bg-orange-700 text-white font-black text-xs px-3.5 py-2 rounded-xl shadow">
+              📲 邀請碼 / QR 加好友
+            </button>
+          </div>
+
+          <!-- 常用好友橫向列 -->
+          <div>
+            <div class="flex items-center justify-between text-xs font-bold text-slate-600 mb-1.5">
+              <span>🤝 已雙向確認的常用好友</span>
+              <span id="friendCountLabel" class="text-[11px] text-slate-400"></span>
+            </div>
+            <div id="confirmedFriendsBar" class="flex items-center gap-2.5 overflow-x-auto no-scrollbar py-1"></div>
+          </div>
+        </div>
+
+        <!-- 群組切換與開新團 -->
+        <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80 space-y-3">
+          <div class="flex items-center justify-between">
+            <h2 class="font-black text-sm text-slate-800">🏕️ 我的旅行與聚會群組</h2>
+            <button onclick="openCreateGroupModal()" class="bg-slate-900 hover:bg-slate-800 text-amber-300 font-black text-xs px-3 py-1.5 rounded-xl">
+              ＋ 開新團
+            </button>
+          </div>
+          <div id="groupSwitchList" class="space-y-2"></div>
+        </div>
+
+        <!-- [商業化預留版位] 非金融類旅人實用工具提示（嚴格避開 SFC 監管之金融推廣） -->
+        <div class="bg-gradient-to-r from-slate-800 to-slate-900 text-white rounded-2xl p-3.5 shadow-sm flex items-center justify-between">
+          <div class="space-y-0.5 pr-2">
+            <div class="text-[10px] text-amber-300 font-bold">✈️ 旅人出發前檢查清單</div>
+            <div class="text-xs font-black">漫遊 eSIM 數據卡・機場快線・包車預訂</div>
+            <div class="text-[10px] text-slate-300">記低包車同門票入公數池，完團自動多退少補</div>
+          </div>
+          <button onclick="switchTab('ledger'); openAddExpenseModal();" class="bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] px-3 py-1.5 rounded-xl shrink-0">
+            記低預訂 ➔
+          </button>
+        </div>
+      </div>
+
+      <!-- ==================== [分頁 D] 🔔 通知與破鎖確認中心 (Tab: notify) ==================== -->
+      <div id="tab-notify" class="hidden space-y-3">
+        <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80 space-y-3">
+          <div class="flex items-center justify-between">
+            <h2 class="font-black text-base text-slate-800">🔔 過數破鎖與入團通知中心</h2>
+            <button onclick="simulateFriendPayment()" class="text-[11px] bg-amber-100 hover:bg-amber-200 text-amber-900 font-bold px-2.5 py-1 rounded-lg">
+              ⚡ 模擬團友過數給我
+            </button>
+          </div>
+          <div id="notificationListContainer" class="space-y-2.5"></div>
+        </div>
+      </div>
+
+      <!-- ==================== [分頁 E] ⚙️ 設定：換裝 + AES-GCM 金庫 + 匯率 + 備份 (Tab: settings) ==================== -->
+      <div id="tab-settings" class="hidden space-y-4">
+
+        <!-- 1. 本人角色換裝與名稱 -->
+        <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80 space-y-3">
+          <h2 class="font-black text-sm text-slate-800">🦊 本人角色外觀與名稱設定</h2>
+          <div class="flex items-center gap-3">
+            <div id="myProfileAvatarPreview" class="w-14 h-14 rounded-full bg-amber-100 flex items-center justify-center text-3xl border-2 border-orange-500 overflow-hidden shrink-0"></div>
+            <div class="flex-1">
+              <label class="text-[11px] font-bold text-slate-500">顯示暱稱</label>
+              <input id="myProfileNameInput" type="text" value="阿明"
+                     class="w-full mt-0.5 px-3 py-1.5 text-sm font-bold border border-slate-300 rounded-xl focus:outline-none focus:border-orange-500">
+            </div>
+            <button onclick="saveMyProfile()" class="bg-slate-900 text-white font-bold text-xs px-3 py-2 rounded-xl">儲存</button>
+          </div>
+          <div>
+            <div class="text-[11px] font-bold text-slate-500 mb-1.5">點選更換稀有動物頭像：</div>
+            <div id="animalPickerGrid" class="grid grid-cols-4 gap-2"></div>
+          </div>
+        </div>
+
+        <!-- 2. 真正 AES-GCM (256-bit) 軍事級加密收款金庫 (含密碼強度提示 + 600,000 次 PBKDF2) -->
+        <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80 space-y-3">
+          <div class="flex items-center justify-between">
+            <div>
+              <h2 class="font-black text-sm text-slate-800 flex items-center gap-1">
+                <span>🔐 AES-GCM 個人收款金庫</span>
+                <button onclick="showHelpTip('PBKDF2 (600,000次) + AES-GCM 256-bit', '你的 FPS、PayMe、銀行戶口與收款 QR Code 會透過你的金庫密碼衍生 256-bit 金鑰加密後存入 IndexedDB，絕不明文落地！強烈建議設定 8 位以上英數混合密碼以保護備份檔。')"
+                        aria-label="加密收款金庫說明" class="text-xs text-slate-400 font-bold">ⓘ</button>
+              </h2>
+              <p class="text-[11px] text-slate-500">首次預設密碼：<code class="font-bold text-orange-700">1234</code>（解鎖後請立即更改為強密碼）</p>
+            </div>
+            <span id="vaultLockBadge" class="text-[11px] bg-rose-100 text-rose-800 font-bold px-2.5 py-1 rounded-full">🔒 已鎖定</span>
+          </div>
+
+          <!-- 金庫解鎖列 -->
+          <div id="vaultUnlockBox" class="flex gap-2">
+            <input id="vaultPasswordInput" type="password" placeholder="輸入金庫密碼 (首次預設 1234)"
+                   class="flex-1 px-3 py-2 text-sm border border-slate-300 rounded-xl">
+            <button onclick="handleUnlockVault()" class="bg-orange-600 hover:bg-orange-700 text-white font-black text-xs px-4 py-2 rounded-xl">
+              🔓 解鎖金庫
+            </button>
+          </div>
+
+          <!-- 解鎖後顯示的收款設定表單 -->
+          <div id="vaultFormContainer" class="hidden space-y-3 pt-2 border-t border-slate-200">
+            <div id="vaultPasswordStrengthBanner" class="hidden p-2 rounded-xl text-[11px] font-bold"></div>
+
+            <div class="grid grid-cols-1 gap-2.5">
+              <div>
+                <label class="text-[11px] font-bold text-slate-600">⚡ 轉數快 FPS 識別碼 / 電話 / 電郵</label>
+                <input id="vaultFpsInput" type="text" placeholder="例如：91234567"
+                       class="w-full mt-0.5 px-3 py-1.5 text-sm border border-slate-300 rounded-xl">
+              </div>
+
+              <div>
+                <label class="text-[11px] font-bold text-slate-600">🔴 PayMe 個人收款連結 (僅限 https://)</label>
+                <input id="vaultPaymeInput" type="url" placeholder="https://payme.hsbc/..."
+                       class="w-full mt-0.5 px-3 py-1.5 text-sm border border-slate-300 rounded-xl">
+              </div>
+
+              <!-- 香港銀行名稱下拉選單 + 戶口號碼 + 持有人核對 -->
+              <div class="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-2">
+                <div class="text-xs font-black text-slate-700">🏦 銀行轉帳資料（下拉選單 ＋ 戶口 ＋ 持有人核對）</div>
+                <div>
+                  <label class="text-[11px] font-bold text-slate-600">1. 選擇香港結算銀行</label>
+                  <select id="vaultBankCodeSelect" class="w-full mt-0.5 px-3 py-1.5 text-sm border border-slate-300 rounded-xl bg-white font-semibold">
+                    <option value="">-- 請選擇銀行名稱 --</option>
+                    <option value="004">004 滙豐銀行 (HSBC)</option>
+                    <option value="012">012 中國銀行(香港) (BOCHK)</option>
+                    <option value="024">024 恒生銀行 (Hang Seng)</option>
+                    <option value="003">003 渣打銀行 (Standard Chartered)</option>
+                    <option value="387">387 Mox Bank</option>
+                    <option value="389">389 ZA Bank (眾安銀行)</option>
+                    <option value="390">390 理慧銀行 (livi Bank)</option>
+                    <option value="391">391 螞蟻銀行 (Ant Bank)</option>
+                    <option value="015">015 東亞銀行 (BEA)</option>
+                    <option value="016">016 星展銀行 (DBS)</option>
+                    <option value="018">018 中信銀行(國際) (CNCBI)</option>
+                    <option value="020">020 招商永隆銀行 (CMB Wing Lung)</option>
+                    <option value="OTHER">其他香港結算銀行</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label class="text-[11px] font-bold text-slate-600">2. 銀行戶口號碼 (6–14 位數字)</label>
+                  <input id="vaultBankAccountInput" type="text" placeholder="例如：123-456789-001"
+                         class="w-full mt-0.5 px-3 py-1.5 text-sm border border-slate-300 rounded-xl">
+                </div>
+
+                <div>
+                  <label class="text-[11px] font-bold text-slate-600">3. 持有人姓名核對 (供團友過數前核對)</label>
+                  <input id="vaultHolderNameInput" type="text" placeholder="例如：CHAN T** M*** / 陳大明"
+                         class="w-full mt-0.5 px-3 py-1.5 text-sm border border-slate-300 rounded-xl">
+                </div>
+              </div>
+
+              <!-- 加密版收款 QR Code 原生 Blob -->
+              <div class="bg-amber-50/70 p-3 rounded-xl border border-amber-200 space-y-2">
+                <div class="flex items-center justify-between">
+                  <span class="text-xs font-black text-amber-900">🖼️ 收款 QR Code (AES-GCM 二進位 Blob 加密儲存)</span>
+                  <input id="vaultQrFileInput" type="file" accept="image/*" class="hidden" onchange="handleVaultQrUpload(event)">
+                  <button onclick="document.getElementById('vaultQrFileInput').click()"
+                          class="bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-bold px-2.5 py-1 rounded-lg">
+                    上傳 QR 圖
+                  </button>
+                </div>
+                <div id="vaultQrPreviewWrap" class="hidden flex items-center gap-3">
+                  <img id="vaultQrPreviewImg" src="" alt="加密 QR" class="w-16 h-16 rounded-lg object-cover border border-amber-400">
+                  <span id="vaultQrStatusText" class="text-[11px] text-emerald-700 font-bold">✅ 已加密存入 media_vault_store</span>
+                </div>
+              </div>
+
+              <div>
+                <label class="text-[11px] font-bold text-slate-600">🔑 更新金庫密碼 (建議至少 8 位英數混合，留空則維持原密碼)</label>
+                <input id="vaultNewPasswordInput" type="password" placeholder="輸入 8 位以上英數混合新密碼"
+                       class="w-full mt-0.5 px-3 py-1.5 text-sm border border-slate-300 rounded-xl">
+              </div>
+            </div>
+
+            <div class="flex gap-2">
+              <button onclick="handleSaveEncryptedVault()" class="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs py-2.5 rounded-xl shadow">
+                💾 AES-GCM 加密寫入金庫
+              </button>
+              <button onclick="lockVaultUI()" class="bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold text-xs px-3 py-2.5 rounded-xl">
+                🔒 鎖上並清除記憶體
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. 每日凌晨 02:12 自動匯率引擎與純本地三層 OCR 狀態卡 (含 API 歸屬標示) -->
+        <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80 space-y-2.5">
+          <div class="flex items-center justify-between">
+            <h2 class="font-black text-sm text-slate-800">💱 每日 02:12 匯率與本地 OCR 狀態</h2>
+            <button onclick="manualRefreshDailyRates()" class="text-[11px] bg-slate-900 text-amber-300 font-bold px-2.5 py-1 rounded-lg">
+              🔄 立即檢查匯率
+            </button>
+          </div>
+          <div id="settingsRateInfoBox" class="text-[11px] text-slate-600 bg-slate-50 p-2.5 rounded-xl border border-slate-200 space-y-1">
+            <div>● <strong>匯率更新策略：</strong>每日凌晨 02:12 後首次開啟自動更新；若離線或失敗則無縫沿用昨日紀錄（<a href="https://www.exchangerate-api.com" target="_blank" rel="noopener noreferrer" class="underline text-slate-700">Rates by Exchange Rate API</a>）。</div>
+            <div>● <strong>收據辨識路線：</strong>🛡️ 100% 純前端三層架構（Web Worker 二值化 ＋ 本地 Tesseract.js v5.1.1 ＋ 關鍵字錨點定位），單據零上雲、零金鑰外洩風險。</div>
+          </div>
+        </div>
+
+        <!-- 4. 自動備份與完整打包還原 (.messybackup.json) -->
+        <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80 space-y-2.5">
+          <div class="flex items-center justify-between">
+            <h2 class="font-black text-sm text-slate-800">💾 自動備份與跨機完整還原</h2>
+            <span class="text-[10px] bg-sky-100 text-sky-800 font-bold px-2 py-0.5 rounded">Dirty-Check 省電快照</span>
+          </div>
+          <p class="text-[11px] text-slate-500">
+            完整備份檔會連同 <code class="text-slate-700 font-bold">media_vault_store</code> 內的原生單據 Blob 及 AES-GCM 加密金庫密文一併分塊打包：
+          </p>
+          <div class="grid grid-cols-2 gap-2">
+            <button onclick="handleDownloadFullBackup()" class="bg-sky-600 hover:bg-sky-700 text-white font-black text-xs py-2.5 rounded-xl shadow">
+              ⬇️ 下載完整備份檔
+            </button>
+            <input id="restoreBackupFileInput" type="file" accept=".json" class="hidden" onchange="handleRestoreBackupFile(event)">
+            <button onclick="document.getElementById('restoreBackupFileInput').click()"
+                    class="bg-amber-600 hover:bg-amber-700 text-white font-black text-xs py-2.5 rounded-xl shadow">
+              ⬆️ 選取備份檔還原
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ==================== [分頁 F] ⚖️ 香港法規、免責條款與開源授權聲明 (Tab: legal) ==================== -->
+      <div id="tab-legal" class="hidden space-y-3">
+        <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80 space-y-3 text-xs leading-relaxed text-slate-700">
+          <div class="flex items-center justify-between border-b pb-2">
+            <h2 class="font-black text-base text-slate-900">⚖️ 《混賬》香港法規、免責與開源聲明</h2>
+            <button onclick="switchTab('ledger')" class="text-xs text-orange-600 font-bold">返回記帳 ✕</button>
+          </div>
+          <div class="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-950 font-semibold">
+            📌 核心定性：本程式僅為「純社交記帳資訊與算術輔助工具」，絕不涉及任何資金代收、代付、託管或儲值支付工具（SVF）業務。
+          </div>
+          <ul class="list-disc pl-5 space-y-1.5">
+            <li><strong>香港《支付系統及儲值支付工具條例》（第 584 章）合規：</strong>「公數資金池」僅為數字記帳欄位，實際款項由團友自行保管或透過外部銀行／PayMe／FPS 點對點轉帳。</li>
+            <li><strong>《個人資料（私隱）條例》（第 486 章 PDPO）保障：</strong>個人收款戶口與 QR Code 採用 Web Crypto API (PBKDF2 600,000 次迭代 + AES-GCM 256-bit) 本地加密儲存於用戶裝置之 IndexedDB，邀請碼 QR Code 與單據 OCR 皆為 100% 純前端本地運算，開發者不收集亦不持有任何個人資料。</li>
+            <li><strong>算術、匯率與 OCR 辨識之免責條款（Limitation of Liability）：</strong>本程式提供之跨日匯率折算、OCR 單據自動辨識結果與最少步結算金額均按「現況（AS IS）」提供，僅供社交分攤參考，不附帶任何明示或暗示之準確性保證。用戶於實際執行銀行或電子轉帳前，應自行核對單據原圖、收款人姓名與最終金額；開發者對因使用或依賴本程式所產生之任何直接、間接誤差或財務損失概不負責。</li>
+            <li><strong>第三方資料來源與開源授權聲明（Attributions）：</strong>
+              <div class="mt-1 text-[11px] text-slate-500 space-y-0.5">
+                <div>1. 匯率參考資料：<a href="https://www.exchangerate-api.com" target="_blank" rel="noopener noreferrer" class="underline">Rates By Exchange Rate API</a></div>
+                <div>2. 本地光學字元辨識引擎：Powered by <code>Tesseract.js</code> (Licensed under the Apache License, Version 2.0).</div>
+                <div>3. 原創程式碼與美術圖示依香港《版權條例》（第 528 章）享有版權保護。</div>
+              </div>
+            </li>
+          </ul>
+        </div>
+      </div>
+
+    </main>
+
+    <!-- 4. 底部懸浮導航列 -->
+    <nav class="bottom-dock" aria-label="主導航列">
+      <button id="dock-ledger" onclick="switchTab('ledger')" class="dock-btn active">
+        <span class="text-base">🧾</span>
+        <span>記賬</span>
+      </button>
+      <button id="dock-settle" onclick="switchTab('settle')" class="dock-btn">
+        <span class="text-base">⚡</span>
+        <span>埋單</span>
+      </button>
+      <button id="dock-groups" onclick="switchTab('groups')" class="dock-btn">
+        <span class="text-base">👥</span>
+        <span>群組</span>
+      </button>
+      <button id="dock-notify" onclick="switchTab('notify')" class="dock-btn">
+        <span class="text-base">🔔</span>
+        <span>通知</span>
+        <span id="notifyUnreadDot" class="hidden absolute top-1 right-3 w-2 h-2 bg-red-500 rounded-full"></span>
+      </button>
+      <button id="dock-settings" onclick="switchTab('settings')" class="dock-btn">
+        <span class="text-base">⚙️</span>
+        <span>設定</span>
+      </button>
+    </nav>
+
+  </div>
+
+  <!-- ========================================================================
+       彈窗區 (全部具備 role="dialog"、aria-modal="true" 與 Escape 鍵關閉支援)
+       ======================================================================== -->
+
+  <!-- [彈窗 1] ➕ 新增／編輯消費 ＋ 📷 純前端三層架構 OCR 收據掃描 ＋ 自訂加項 -->
+  <div id="addExpenseModal" role="dialog" aria-modal="true" aria-labelledby="addExpenseModalTitle" class="modal-backdrop hidden">
+    <div class="bg-white w-full max-w-sm rounded-2xl p-4 shadow-2xl space-y-3 max-h-[90vh] overflow-y-auto">
+      <div class="flex items-center justify-between border-b pb-2">
+        <h3 id="addExpenseModalTitle" class="font-black text-base text-slate-900">🧾 記一筆 ／ 📷 本地三層 OCR 掃單</h3>
+        <button onclick="closeModal('addExpenseModal')" aria-label="關閉視窗" class="text-slate-400 hover:text-slate-700 font-black">✕</button>
+      </div>
+
+      <!-- OCR 掃描收據區塊 -->
+      <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-2">
+        <div class="flex items-center justify-between">
+          <div>
+            <div class="text-xs font-black text-amber-950">🛡️ 本地三層智能掃單 (Worker 二值化 + 錨點)</div>
+            <div id="ocrProgressStatus" class="text-[11px] text-amber-800">100% 手機本地運算，單據絕不上雲</div>
+          </div>
+          <input id="receiptFileInput" type="file" accept="image/*" class="hidden" onchange="handleReceiptScanUpload(event)">
+          <button onclick="document.getElementById('receiptFileInput').click()"
+                  class="bg-orange-600 hover:bg-orange-700 text-white font-black text-xs px-3 py-1.5 rounded-xl shadow">
+            拍單據 / 選圖
+          </button>
+        </div>
+
+        <!-- 免金鑰極速文字貼上解析格 -->
+        <details class="text-[11px] text-slate-600">
+          <summary class="cursor-pointer font-bold text-orange-800">⚡ 或直接貼上單據文字（0秒 Layer 3 錨點解析）</summary>
+          <div class="mt-1.5 flex gap-1.5">
+            <textarea id="rawReceiptTextPaste" rows="2" placeholder="例如：一蘭拉麵 新宿店 令和8年10月22日 税込合計 ¥3,920"
+                      class="flex-1 p-1.5 text-xs border border-amber-300 rounded-lg bg-white"></textarea>
+            <button onclick="handleQuickTextOcr()" class="bg-slate-800 text-amber-300 font-bold px-2.5 rounded-lg">解析</button>
+          </div>
+        </details>
+      </div>
+
+      <!-- 表單欄位 -->
+      <div class="space-y-2">
+        <div>
+          <label class="text-[11px] font-bold text-slate-600">消費店名 / 項目名稱</label>
+          <input id="expTitleInput" type="text" placeholder="例如：築地海膽丼、新宿藥妝"
+                 class="w-full mt-0.5 px-3 py-1.5 text-sm border border-slate-300 rounded-xl font-semibold">
+        </div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="text-[11px] font-bold text-slate-600">總金額 (<span id="expCurrencyLabel">JPY</span>)</label>
+            <input id="expAmountInput" type="number" step="0.01" placeholder="0.00"
+                   class="w-full mt-0.5 px-3 py-1.5 text-sm border border-slate-300 rounded-xl font-black text-orange-700">
+          </div>
+          <div>
+            <label class="text-[11px] font-bold text-slate-600">消費日期</label>
+            <input id="expDateInput" type="date"
+                   class="w-full mt-0.5 px-3 py-1.5 text-sm border border-slate-300 rounded-xl">
+          </div>
+        </div>
+
+        <div class="flex items-center justify-between bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+          <span class="text-xs font-bold text-slate-700">付款人 / 支付來源</span>
+          <select id="expPayerSelect" class="text-xs font-black bg-white border border-slate-300 rounded-lg px-2.5 py-1.5"></select>
+        </div>
+
+        <div>
+          <div class="flex items-center justify-between text-xs font-bold text-slate-700 mb-1">
+            <span>參與分攤團友（右側可填個人額外加項）</span>
+            <span class="text-[10px] text-slate-400">餘額自動平分</span>
+          </div>
+          <div id="expSplitMembersBox" class="space-y-1.5"></div>
+        </div>
+      </div>
+
+      <div class="flex gap-2 pt-2">
+        <button id="saveExpenseBtn" onclick="saveNewExpense()" class="flex-1 bg-orange-600 hover:bg-orange-700 text-white font-black text-sm py-2.5 rounded-xl shadow">
+          ✅ 儲存這筆賬單
+        </button>
+        <button onclick="closeModal('addExpenseModal')" class="bg-slate-200 text-slate-700 font-bold text-xs px-4 rounded-xl">
+          取消
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- [彈窗 2] 🏕️ 開新團 -->
+  <div id="createGroupModal" role="dialog" aria-modal="true" class="modal-backdrop hidden">
+    <div class="bg-white w-full max-w-sm rounded-2xl p-4 shadow-2xl space-y-3 max-h-[90vh] overflow-y-auto">
+      <div class="flex items-center justify-between border-b pb-2">
+        <h3 class="font-black text-base text-slate-900">🏕️ 開立新旅行／聚會群組</h3>
+        <button onclick="closeModal('createGroupModal')" aria-label="關閉視窗" class="text-slate-400 hover:text-slate-700 font-black">✕</button>
+      </div>
+
+      <div class="space-y-2">
+        <div>
+          <label class="text-[11px] font-bold text-slate-600">群組名稱</label>
+          <input id="newGroupNameInput" type="text" placeholder="例如：大阪環球影城 5日4夜"
+                 class="w-full mt-0.5 px-3 py-1.5 text-sm border border-slate-300 rounded-xl font-bold">
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="text-[11px] font-bold text-slate-600">主要記帳外幣</label>
+            <select id="newGroupCurrencySelect" onchange="autoFillExchangeRate(this.value)"
+                    class="w-full mt-0.5 px-3 py-1.5 text-sm border border-slate-300 rounded-xl font-bold bg-white">
+              <option value="JPY">JPY 日圓 (¥)</option>
+              <option value="HKD">HKD 港幣 (HK$)</option>
+              <option value="TWD">TWD 台幣 (NT$)</option>
+              <option value="USD">USD 美金 ($)</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-[11px] font-bold text-slate-600">當日折算港幣匯率</label>
+            <input id="newGroupRateInput" type="number" step="0.0001" value="0.052"
+                   class="w-full mt-0.5 px-3 py-1.5 text-sm border border-slate-300 rounded-xl font-bold">
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-1.5">
+        <div class="text-xs font-black text-slate-700">1. 左右橫掃常用好友（點 <span class="text-orange-600">＋</span> 直接入團）</div>
+        <div id="swipeFrequentFriendsBar" class="flex items-center gap-2.5 overflow-x-auto no-scrollbar py-1"></div>
+      </div>
+
+      <div class="bg-amber-50/70 p-3 rounded-xl border border-amber-200 space-y-2">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-black text-amber-950">2. 本團預備成員席</span>
+          <button onclick="addGreyPlaceholderSlot()" class="text-[11px] bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold px-2 py-0.5 rounded-lg">
+            ＋ 增加無App成員格
+          </button>
+        </div>
+        <p class="text-[11px] text-slate-500">點擊灰色虛線「＋」圓框即可設定無 App 朋友的名稱與動物樣貌：</p>
+        <div id="stagedGroupMembersGrid" class="flex flex-wrap gap-3 pt-1"></div>
+      </div>
+
+      <button onclick="confirmCreateNewGroup()" class="w-full bg-slate-900 hover:bg-slate-800 text-amber-300 font-black text-sm py-3 rounded-xl shadow-lg">
+        🚀 確定建立群組（統一發送入團通知）
+      </button>
+    </div>
+  </div>
+
+  <!-- [彈窗 3] 👤 設定無 App 成員 -->
+  <div id="configPlaceholderModal" role="dialog" aria-modal="true" class="modal-backdrop hidden">
+    <div class="bg-white w-full max-w-xs rounded-2xl p-4 shadow-2xl space-y-3">
+      <div class="flex items-center justify-between border-b pb-2">
+        <h3 class="font-black text-sm text-slate-900">🐾 設定無 App 團友名稱與樣貌</h3>
+        <button onclick="closeModal('configPlaceholderModal')" aria-label="關閉視窗" class="text-slate-400 font-black">✕</button>
+      </div>
+      <div>
+        <label class="text-[11px] font-bold text-slate-600">團友暱稱</label>
+        <input id="placeholderNameInput" type="text" placeholder="例如：表姐、阿傑"
+               class="w-full mt-0.5 px-3 py-1.5 text-sm border border-slate-300 rounded-xl font-bold">
+      </div>
+      <div>
+        <div class="text-[11px] font-bold text-slate-600 mb-1">選擇代表他的稀有動物：</div>
+        <div id="placeholderAnimalGrid" class="grid grid-cols-4 gap-2"></div>
+      </div>
+      <button onclick="savePlaceholderMemberConfig()" class="w-full bg-orange-600 hover:bg-orange-700 text-white font-black text-xs py-2.5 rounded-xl">
+        ✅ 確認設定此團友
+      </button>
+    </div>
+  </div>
+
+  <!-- [彈窗 4] 🔒 私密邀請碼與專屬 QR Code 加好友（100% 本地離線生成 QR） -->
+  <div id="addFriendModal" role="dialog" aria-modal="true" class="modal-backdrop hidden">
+    <div class="bg-white w-full max-w-sm rounded-2xl p-4 shadow-2xl space-y-3">
+      <div class="flex items-center justify-between border-b pb-2">
+        <h3 class="font-black text-base text-slate-900">🔒 私密邀請碼 ／ 本地 QR 加好友</h3>
+        <button onclick="closeModal('addFriendModal')" aria-label="關閉視窗" class="text-slate-400 font-black">✕</button>
+      </div>
+
+      <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 text-center space-y-2">
+        <div class="text-[11px] font-bold text-amber-900">📤 出示給身邊朋友掃描（100% 本地生成零外洩）：</div>
+        <img id="myInviteQrImg" src="" alt="專屬邀請 QR Code" class="w-36 h-36 mx-auto rounded-xl border border-amber-300 bg-white p-1">
+        <div class="flex items-center justify-center gap-2">
+          <code id="myInviteCodeText" class="font-black text-sm text-slate-900 bg-white px-3 py-1 rounded-lg border">MS-8F9A-22K1</code>
+          <button onclick="copyMyInviteLink()" class="bg-slate-800 text-amber-300 text-xs font-bold px-2.5 py-1 rounded-lg">複製</button>
+          <button onclick="refreshMyInviteCode()" class="bg-slate-200 text-slate-700 text-xs font-bold px-2 py-1 rounded-lg" title="刷新後舊碼立即作廢">🔄 刷新</button>
+        </div>
+        <p class="text-[10px] text-slate-500">🛡️ 邀請碼於手機本地繪製成 QR，離線可用且絕不經第三方伺服器</p>
+      </div>
+
+      <div class="space-y-1.5 pt-1">
+        <label class="text-xs font-black text-slate-700">📥 輸入朋友提供的邀請碼：</label>
+        <div class="flex gap-2">
+          <input id="friendInviteCodeInput" type="text" placeholder="例如：MS-4K9P-7X2A"
+                 class="flex-1 px-3 py-2 text-sm font-mono uppercase border border-slate-300 rounded-xl">
+          <button onclick="submitFriendInviteCode()" class="bg-orange-600 hover:bg-orange-700 text-white font-black text-xs px-4 rounded-xl shadow">
+            驗證加友
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- [彈窗 5] 💸 過數找數與跨機破鎖請求彈窗 -->
+  <div id="payConfirmModal" role="dialog" aria-modal="true" class="modal-backdrop hidden">
+    <div class="bg-white w-full max-w-sm rounded-2xl p-4 shadow-2xl space-y-3 max-h-[90vh] overflow-y-auto">
+      <div class="flex items-center justify-between border-b pb-2">
+        <h3 class="font-black text-base text-slate-900">💸 找數予債主並發送破鎖請求</h3>
+        <button onclick="closeModal('payConfirmModal')" aria-label="關閉視窗" class="text-slate-400 font-black">✕</button>
+      </div>
+      <div id="payModalDetailBox" class="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-2 text-xs"></div>
+      <div class="space-y-1.5">
+        <button onclick="confirmIHavePaid(false)" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-black text-sm py-2.5 rounded-xl shadow">
+          ✋ 我已過數（標記待確認）
+        </button>
+        <button onclick="confirmIHavePaid(true)" class="w-full bg-slate-900 hover:bg-slate-800 text-amber-300 font-bold text-xs py-2 rounded-xl">
+          📲 我已過數並產生「跨機破鎖連結」傳給債主
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- [彈窗 6] 💰 公數池注資彈窗 -->
+  <div id="poolTopupModal" role="dialog" aria-modal="true" class="modal-backdrop hidden">
+    <div class="bg-white w-full max-w-xs rounded-2xl p-4 shadow-2xl space-y-3">
+      <div class="flex items-center justify-between border-b pb-2">
+        <h3 class="font-black text-sm text-slate-900">💰 注資公數資金池</h3>
+        <button onclick="closeModal('poolTopupModal')" aria-label="關閉視窗" class="text-slate-400 font-black">✕</button>
+      </div>
+      <div>
+        <label class="text-[11px] font-bold text-slate-600">注資總額 (<span id="poolModalCurrency">JPY</span>)</label>
+        <input id="poolTopupAmountInput" type="number" value="5000"
+               class="w-full mt-0.5 px-3 py-1.5 text-sm border border-slate-300 rounded-xl font-black">
+      </div>
+      <div>
+        <label class="text-[11px] font-bold text-slate-600">出資方式（供完團退還公數結餘計算）</label>
+        <select id="poolContributorSelect" class="w-full mt-0.5 px-2.5 py-1.5 text-xs font-bold border border-slate-300 rounded-xl bg-white"></select>
+      </div>
+      <button onclick="confirmPoolTopup()" class="w-full bg-orange-600 hover:bg-orange-700 text-white font-black text-xs py-2.5 rounded-xl">
+        ✅ 確認注資公數
+      </button>
+    </div>
+  </div>
+
+  <!-- [彈窗 7] 📸 查看單據原生 Blob 圖片彈窗 -->
+  <div id="receiptPreviewModal" role="dialog" aria-modal="true" class="modal-backdrop hidden">
+    <div class="bg-white w-full max-w-sm rounded-2xl p-4 shadow-2xl space-y-3">
+      <div class="flex items-center justify-between border-b pb-2">
+        <h3 id="receiptModalTitle" class="font-black text-sm text-slate-900">📸 單據原圖 (IndexedDB Blob)</h3>
+        <button onclick="closeModal('receiptPreviewModal')" aria-label="關閉視窗" class="text-slate-400 font-black">✕</button>
+      </div>
+      <div class="bg-slate-100 rounded-xl p-2 flex items-center justify-center min-h-[220px]">
+        <img id="receiptModalImg" src="" alt="單據圖片" class="max-h-[360px] rounded-lg object-contain">
+      </div>
+    </div>
+  </div>
+
+  <!-- [彈窗 8] 💡 毛玻璃長按／點擊說明提示卡 -->
+  <div id="helpTipModal" role="dialog" aria-modal="true" class="modal-backdrop hidden" onclick="closeModal('helpTipModal')">
+    <div class="bg-slate-900/95 text-white w-full max-w-xs rounded-2xl p-4 shadow-2xl border border-slate-700 space-y-2" onclick="event.stopPropagation()">
+      <div class="flex items-center justify-between">
+        <span id="helpTipTitle" class="font-black text-sm text-amber-300">💡 功能說明</span>
+        <button onclick="closeModal('helpTipModal')" aria-label="關閉說明" class="text-slate-400 text-xs font-bold">關閉</button>
+      </div>
+      <p id="helpTipBody" class="text-xs text-slate-200 whitespace-pre-line leading-relaxed"></p>
+    </div>
+  </div>
+
+  <!-- Toast 浮動訊息提示 -->
+  <div id="toastBanner" role="status" aria-live="polite" class="hidden fixed top-16 left-1/2 -translate-x-1/2 z-[80] bg-slate-900/95 text-amber-300 text-xs font-bold px-4 py-2.5 rounded-full shadow-xl border border-amber-400/30"></div>
+
+  <!-- ========================================================================
+       引入外部三大核心模組 (db-crypto.js / export-backup.js / ocr-scanner.js)
+       ======================================================================== -->
+  <script src="./db-crypto.js"></script>
+  <script src="./export-backup.js"></script>
+  <script src="./ocr-scanner.js"></script>
+
+  <!-- ========================================================================
+       主應用程式邏輯 (v7.2 審計強化版)
+       ======================================================================== -->
+  <script>
+    // ------------------------------------------------------------------------
+    // 0. 安全轉義、HTTPS 協定驗證與 Dirty Flag 標記工具
+    // ------------------------------------------------------------------------
+    function escapeHTML(str) {
+      return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    /**
+     * 嚴格檢查外部收款連結是否為合法 https:// 協定，阻斷 javascript: 或 data: 偽協議攻擊
+     */
+    function isSafeHttpsUrl(urlStr) {
+      if (typeof urlStr !== 'string' || !urlStr.trim()) return false;
+      try {
+        const u = new URL(urlStr.trim());
+        return u.protocol === 'https:';
+      } catch (_) {
+        return false;
+      }
+    }
+
+    function markAppStateDirty(immediateSave = false) {
+      if (typeof ExportBackup !== 'undefined') {
+        if (typeof ExportBackup.markDirty === 'function') {
+          ExportBackup.markDirty();
+        }
+        if (immediateSave) {
+          ExportBackup.saveAutoSnapshot(() => window.appState, true);
+        }
+      }
+    }
+
+    // 全域鍵盤無障礙支援：按 Escape 關閉當前開啟的彈窗
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        const openModals = document.querySelectorAll('.modal-backdrop:not(.hidden)');
+        openModals.forEach((m) => closeModal(m.id));
+      }
+    });
+
+    // ------------------------------------------------------------------------
+    // 0.5 純前端 ISO/IEC 18004 標準 QR Code 生成器 (LocalQR)
+    // ------------------------------------------------------------------------
+    const LocalQR = (() => {
+      const V_SPECS = [
+        null,
+        [19, 7, 1],
+        [34, 10, 1],
+        [55, 15, 1],
+        [80, 20, 1],
+        [108, 26, 1],
+        [136, 18, 2],
+        [156, 20, 2],
+        [194, 24, 2],
+        [232, 30, 2]
+      ];
+      const ALIGN_POS = [
+        null,
+        [],
+        [6, 18],
+        [6, 22],
+        [6, 26],
+        [6, 30],
+        [6, 34],
+        [6, 22, 38],
+        [6, 24, 42],
+        [6, 26, 46]
+      ];
+
+      const GF_EXP = new Uint8Array(512);
+      const GF_LOG = new Uint8Array(256);
+      (() => {
+        let x = 1;
+        for (let i = 0; i < 255; i++) {
+          GF_EXP[i] = x;
+          GF_LOG[x] = i;
+          x <<= 1;
+          if (x & 0x100) x ^= 0x11d;
+        }
+        for (let i = 255; i < 512; i++) GF_EXP[i] = GF_EXP[i - 255];
+      })();
+
+      function gfMul(a, b) {
+        return a === 0 || b === 0 ? 0 : GF_EXP[GF_LOG[a] + GF_LOG[b]];
+      }
+
+      function getGeneratorPoly(deg) {
+        let poly = [1];
+        for (let i = 0; i < deg; i++) {
+          const next = new Array(poly.length + 1).fill(0);
+          const root = GF_EXP[i];
+          for (let j = 0; j < poly.length; j++) {
+            next[j] ^= poly[j];
+            next[j + 1] ^= gfMul(poly[j], root);
+          }
+          poly = next;
+        }
+        return poly;
+      }
+
+      function computeRS(dataBytes, ecLen) {
+        const gen = getGeneratorPoly(ecLen);
+        const msg = new Uint8Array(dataBytes.length + ecLen);
+        msg.set(dataBytes, 0);
+        for (let i = 0; i < dataBytes.length; i++) {
+          const coef = msg[i];
+          if (coef !== 0) {
+            for (let j = 0; j < gen.length; j++) {
+              msg[i + j] ^= gfMul(gen[j], coef);
+            }
+          }
+        }
+        return msg.slice(dataBytes.length);
+      }
+
+      function encodeMatrix(text) {
+        const utf8 = new TextEncoder().encode(String(text));
+        let ver = 1;
+        while (ver <= 9 && utf8.length + 2 > V_SPECS[ver][0]) ver++;
+        if (ver > 9) throw new Error('QR 資料過長');
+
+        const [totalDataLen, ecPerBlock, numBlocks] = V_SPECS[ver];
+        const bits = [];
+        const pushBits = (val, len) => {
+          for (let i = len - 1; i >= 0; i--) bits.push((val >>> i) & 1);
+        };
+
+        pushBits(0b0100, 4);
+        pushBits(utf8.length, 8);
+        for (let i = 0; i < utf8.length; i++) pushBits(utf8[i], 8);
+        for (let i = 0; i < 4 && bits.length < totalDataLen * 8; i++) bits.push(0);
+        while (bits.length % 8 !== 0) bits.push(0);
+
+        const dataBytes = new Uint8Array(totalDataLen);
+        for (let i = 0; i < bits.length / 8; i++) {
+          let b = 0;
+          for (let j = 0; j < 8; j++) b = (b << 1) | bits[i * 8 + j];
+          dataBytes[i] = b;
+        }
+        const pads = [0xec, 0x11];
+        for (let i = bits.length / 8, p = 0; i < totalDataLen; i++, p ^= 1) {
+          dataBytes[i] = pads[p];
+        }
+
+        const blockSize = totalDataLen / numBlocks;
+        const dataBlocks = [];
+        const ecBlocks = [];
+        for (let b = 0; b < numBlocks; b++) {
+          const block = dataBytes.slice(b * blockSize, (b + 1) * blockSize);
+          dataBlocks.push(block);
+          ecBlocks.push(computeRS(block, ecPerBlock));
+        }
+
+        const finalCodewords = [];
+        for (let i = 0; i < blockSize; i++) {
+          for (let b = 0; b < numBlocks; b++) finalCodewords.push(dataBlocks[b][i]);
+        }
+        for (let i = 0; i < ecPerBlock; i++) {
+          for (let b = 0; b < numBlocks; b++) finalCodewords.push(ecBlocks[b][i]);
+        }
+
+        const size = 17 + ver * 4;
+        const mat = Array.from({ length: size }, () => new Int8Array(size));
+        const isFunc = Array.from({ length: size }, () => new Uint8Array(size));
+
+        const setModule = (r, c, val) => {
+          if (r >= 0 && r < size && c >= 0 && c < size) {
+            mat[r][c] = val ? 1 : 0;
+            isFunc[r][c] = 1;
+          }
+        };
+
+        const drawFinder = (r0, c0) => {
+          for (let dr = -1; dr <= 7; dr++) {
+            for (let dc = -1; dc <= 7; dc++) {
+              const on =
+                dr >= 0 &&
+                dr <= 6 &&
+                dc >= 0 &&
+                dc <= 6 &&
+                (dr === 0 || dr === 6 || dc === 0 || dc === 6 || (dr >= 2 && dr <= 4 && dc >= 2 && dc <= 4));
+              setModule(r0 + dr, c0 + dc, on);
+            }
+          }
+        };
+        drawFinder(0, 0);
+        drawFinder(0, size - 7);
+        drawFinder(size - 7, 0);
+
+        const aligns = ALIGN_POS[ver];
+        for (let i = 0; i < aligns.length; i++) {
+          for (let j = 0; j < aligns.length; j++) {
+            const ar = aligns[i], ac = aligns[j];
+            if ((ar < 9 && ac < 9) || (ar < 9 && ac > size - 10) || (ar > size - 10 && ac < 9)) continue;
+            for (let dr = -2; dr <= 2; dr++) {
+              for (let dc = -2; dc <= 2; dc++) {
+                setModule(ar + dr, ac + dc, Math.max(Math.abs(dr), Math.abs(dc)) !== 1);
+              }
+            }
+          }
+        }
+
+        for (let i = 8; i < size - 8; i++) {
+          if (!isFunc[6][i]) setModule(6, i, i % 2 === 0);
+          if (!isFunc[i][6]) setModule(i, 6, i % 2 === 0);
+        }
+
+        for (let i = 0; i < 9; i++) {
+          if (i !== 6) {
+            isFunc[8][i] = 1;
+            isFunc[i][8] = 1;
+          }
+        }
+        for (let i = 0; i < 8; i++) {
+          isFunc[8][size - 1 - i] = 1;
+          isFunc[size - 1 - i][8] = 1;
+        }
+        setModule(size - 8, 8, 1);
+
+        if (ver >= 7) {
+          let rem = ver << 12;
+          for (let i = 17; i >= 12; i--) {
+            if (rem & (1 << i)) rem ^= 0x1f25 << (i - 12);
+          }
+          const vBits = (ver << 12) | rem;
+          for (let i = 0; i < 18; i++) {
+            const bit = (vBits >>> i) & 1;
+            const a = size - 11 + (i % 3);
+            const b = Math.floor(i / 3);
+            setModule(b, a, bit);
+            setModule(a, b, bit);
+          }
+        }
+
+        const allBits = [];
+        for (let i = 0; i < finalCodewords.length; i++) {
+          for (let j = 7; j >= 0; j--) allBits.push((finalCodewords[i] >>> j) & 1);
+        }
+        let bitIdx = 0;
+        let up = true;
+        for (let right = size - 1; right >= 1; right -= 2) {
+          if (right === 6) right = 5;
+          for (let vert = 0; vert < size; vert++) {
+            const r = up ? size - 1 - vert : vert;
+            for (let j = 0; j < 2; j++) {
+              const c = right - j;
+              if (!isFunc[r][c]) {
+                const bit = bitIdx < allBits.length ? allBits[bitIdx++] : 0;
+                mat[r][c] = bit ^ ((r + c) % 2 === 0 ? 1 : 0);
+              }
+            }
+          }
+          up = !up;
+        }
+
+        const fmt = 0x77c4;
+        const fCoords1 = [
+          [8, 0], [8, 1], [8, 2], [8, 3], [8, 4], [8, 5], [8, 7], [8, 8],
+          [7, 8], [5, 8], [4, 8], [3, 8], [2, 8], [1, 8], [0, 8]
+        ];
+        for (let i = 0; i < 15; i++) {
+          const bit = (fmt >>> i) & 1;
+          const [r1, c1] = fCoords1[i];
+          mat[r1][c1] = bit;
+          if (i < 8) mat[8][size - 1 - i] = bit;
+          else mat[size - 15 + i][8] = bit;
+        }
+
+        return mat;
+      }
+
+      function toDataURL(text, margin = 2) {
+        try {
+          const mat = encodeMatrix(text);
+          const n = mat.length;
+          const total = n + margin * 2;
+          let path = '';
+          for (let r = 0; r < n; r++) {
+            for (let c = 0; c < n; c++) {
+              if (mat[r][c]) path += `M${c + margin},${r + margin}h1v1h-1z`;
+            }
+          }
+          const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${total}" shape-rendering="crispEdges"><rect width="100%" height="100%" fill="#FFFFFF"/><path d="${path}" fill="#0F172A"/></svg>`;
+          return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+        } catch (err) {
+          console.warn('[LocalQR] 生成失敗:', err);
+          return '';
+        }
+      }
+
+      return { toDataURL };
+    })();
+
+    // ------------------------------------------------------------------------
+    // 1. 稀有動物頭像庫與香港銀行代碼對照表
+    // ------------------------------------------------------------------------
+    const RARE_ANIMALS = [
+      { id: 'fox', name: '赤狐旅人', emoji: '🦊', img: './fox.jpg', rawImg: './IMG_2445_306587.jpeg' },
+      { id: 'bunny', name: '花冠垂耳兔', emoji: '🐰', img: './bunny.jpg', rawImg: './IMG_2449_306587.jpeg' },
+      { id: 'bear', name: '毛帽棕熊', emoji: '🐻', img: './bear.jpg', rawImg: './IMG_2450_306587.jpeg' },
+      { id: 'chick', name: '破殼小雞', emoji: '🐣', img: './chick.jpg', rawImg: './IMG_2451_306587.jpeg' },
+      { id: 'otter', name: '海獺掌櫃', emoji: '🦦', img: './otter.jpg', rawImg: './IMG_2448_306587.jpeg' },
+      { id: 'dog', name: '和服柴犬', emoji: '🐶', img: './dog.jpg', rawImg: './IMG_2455_306587.jpeg' },
+      { id: 'flamingo', name: '熱帶紅鶴', emoji: '🦩', img: './flamingo.jpg', rawImg: './IMG_2454_306587.jpeg' },
+      { id: 'sloth', name: '眼鏡樹懶', emoji: '🦥', img: './sloth.jpg', rawImg: './IMG_2453_306587.jpeg' }
+    ];
+
+    const HK_BANK_NAMES = {
+      '004': '004 滙豐銀行 (HSBC)',
+      '012': '012 中國銀行(香港) (BOCHK)',
+      '024': '024 恒生銀行 (Hang Seng)',
+      '003': '003 渣打銀行 (Standard Chartered)',
+      '387': '387 Mox Bank',
+      '389': '389 ZA Bank (眾安銀行)',
+      '390': '390 理慧銀行 (livi Bank)',
+      '391': '391 螞蟻銀行 (Ant Bank)',
+      '015': '015 東亞銀行 (BEA)',
+      '016': '016 星展銀行 (DBS)',
+      '018': '018 中信銀行(國際) (CNCBI)',
+      '020': '020 招商永隆銀行 (CMB Wing Lung)',
+      'OTHER': '其他香港結算銀行'
+    };
+
+    const DEFAULT_CONFIRMED_FRIENDS = [
+      { id: 'u_manson', handle: 'MS-4K9P-7X2A', name: '阿強 (Manson)', animal: 'bear', status: 'friend' },
+      { id: 'u_may', handle: 'MS-9M2L-5V8C', name: '小美 (May)', animal: 'bunny', status: 'friend' }
+    ];
+
+    function getConfirmedFriendsList() {
+      if (!Array.isArray(window.appState.confirmedFriends)) {
+        window.appState.confirmedFriends = [...DEFAULT_CONFIRMED_FRIENDS];
+      }
+      return window.appState.confirmedFriends;
+    }
+
+    // ------------------------------------------------------------------------
+    // 2. 每日凌晨 02:12 跨日匯率懶人檢查引擎（失敗則無縫沿用昨日紀錄）
+    // ------------------------------------------------------------------------
+    const RATE_CACHE_STORAGE_KEY = 'messy_split_daily_rates_v71';
+    const DEFAULT_FALLBACK_RATES = {
+      HKD: 1,
+      JPY: 0.052,
+      TWD: 0.245,
+      USD: 7.80
+    };
+
+    function loadCachedRates() {
+      try {
+        const raw = localStorage.getItem(RATE_CACHE_STORAGE_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && parsed.ratesToHKD) return parsed;
+        }
+      } catch (e) {}
+      return {
+        ratesToHKD: { ...DEFAULT_FALLBACK_RATES },
+        lastUpdatedMs: 0,
+        lastUpdatedDateStr: '預設基準匯率'
+      };
+    }
+
+    function getLatest0212ThresholdMs() {
+      const now = new Date();
+      const today0212 = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate(),
+        2, 12, 0, 0
+      );
+      if (now.getTime() >= today0212.getTime()) {
+        return today0212.getTime();
+      }
+      return today0212.getTime() - 24 * 60 * 60 * 1000;
+    }
+
+    async function checkAndSyncDailyRates(forceManual = false) {
+      const cached = loadCachedRates();
+      const thresholdMs = getLatest0212ThresholdMs();
+      const statusLabel = document.getElementById('rateSyncStatusLabel');
+
+      if (!forceManual && cached.lastUpdatedMs >= thresholdMs) {
+        if (statusLabel) {
+          statusLabel.textContent = `匯率紀錄：${cached.lastUpdatedDateStr} (02:12已同步)`;
+        }
+        return cached.ratesToHKD;
+      }
+
+      if (statusLabel) statusLabel.textContent = '🔄 正在同步當日最新匯率...';
+
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 8000);
+        const response = await fetch('https://open.er-api.com/v6/latest/HKD', { signal: controller.signal });
+        clearTimeout(timeout);
+        if (!response.ok) throw new Error('匯率伺服器回應異常');
+        const data = await response.json();
+
+        if (!data || !data.rates) throw new Error('匯率格式無效');
+
+        const newRatesToHKD = {
+          HKD: 1,
+          JPY: data.rates.JPY ? Number((1 / data.rates.JPY).toFixed(5)) : cached.ratesToHKD.JPY,
+          TWD: data.rates.TWD ? Number((1 / data.rates.TWD).toFixed(4)) : cached.ratesToHKD.TWD,
+          USD: data.rates.USD ? Number((1 / data.rates.USD).toFixed(3)) : cached.ratesToHKD.USD
+        };
+
+        const now = new Date();
+        const dateStamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+        const updatedRecord = {
+          ratesToHKD: newRatesToHKD,
+          lastUpdatedMs: Date.now(),
+          lastUpdatedDateStr: dateStamp
+        };
+        localStorage.setItem(RATE_CACHE_STORAGE_KEY, JSON.stringify(updatedRecord));
+
+        const currentGroup = getCurrentGroup();
+        if (currentGroup && newRatesToHKD[currentGroup.currency]) {
+          currentGroup.exchangeRate = newRatesToHKD[currentGroup.currency];
+          markAppStateDirty(false);
+        }
+
+        if (statusLabel) statusLabel.textContent = `✅ 當日匯率已更新 (${dateStamp.slice(5)})`;
+        renderAll();
+
+        if (forceManual) {
+          showToast(`💱 已更新當日匯率：1 JPY = ${newRatesToHKD.JPY} HKD`);
+        }
+        return newRatesToHKD;
+      } catch (err) {
+        console.warn('[RateEngine] 抓取當日匯率失敗，自動沿用昨日紀錄:', err);
+        if (statusLabel) {
+          statusLabel.textContent = `🛡️ 離線沿用昨日匯率 (${cached.lastUpdatedDateStr.slice(0, 10)})`;
+        }
+        if (forceManual) {
+          showToast('🛡️ 目前離線或連線逾時，已自動沿用昨日匯率紀錄！');
+        }
+        return cached.ratesToHKD;
+      }
+    }
+
+    function manualRefreshDailyRates() {
+      checkAndSyncDailyRates(true);
+    }
+
+    // ------------------------------------------------------------------------
+    // 3. 全域應用程式狀態 (window.appState)
+    // ------------------------------------------------------------------------
+    let myPrivateInviteCode = localStorage.getItem('messy_my_invite_code') || 'MS-8F9A-22K1';
+
+    window.appState = {
+      currentUser: {
+        id: 'u_me',
+        handle: myPrivateInviteCode,
+        name: '阿明',
+        animal: 'fox'
+      },
+      confirmedFriends: [...DEFAULT_CONFIRMED_FRIENDS],
+      currentGroupId: 'grp_tokyo_2026',
+      groups: [
+        {
+          id: 'grp_tokyo_2026',
+          name: '東京賞楓美食團 🍁',
+          currency: 'JPY',
+          exchangeRate: loadCachedRates().ratesToHKD.JPY || 0.052,
+          poolBalance: 15000,
+          includePoolInSettlement: false,
+          poolContributions: {
+            u_me: 5750,
+            u_may: 5750,
+            u_manson: 5750,
+            u_ghost_1: 5750
+          },
+          members: [
+            { id: 'u_me', name: '阿明', animal: 'fox', isAppUser: true },
+            { id: 'u_may', name: '小美', animal: 'bunny', isAppUser: true },
+            { id: 'u_manson', name: '阿強', animal: 'bear', isAppUser: true },
+            { id: 'u_ghost_1', name: '表弟(無App)', animal: 'chick', isAppUser: false }
+          ],
+          expenses: [
+            {
+              id: 'exp_101',
+              title: '新宿敘敘苑燒肉晚餐',
+              amount: 24000,
+              date: '2026-10-21',
+              payerId: 'u_me',
+              paidByPool: false,
+              participants: ['u_me', 'u_may', 'u_manson', 'u_ghost_1'],
+              customExtras: {},
+              receiptId: null,
+              receiptSizeKB: 0
+            },
+            {
+              id: 'exp_102',
+              title: '河口湖包車訂金 (公數支付)',
+              amount: 8000,
+              date: '2026-10-22',
+              payerId: 'POOL',
+              paidByPool: true,
+              participants: ['u_me', 'u_may', 'u_manson', 'u_ghost_1'],
+              customExtras: {},
+              receiptId: null,
+              receiptSizeKB: 0
+            }
+          ],
+          settlementStatus: {}
+        }
+      ],
+      notifications: [
+        {
+          id: 'notif_1',
+          type: 'payment_claim',
+          fromId: 'u_may',
+          fromName: '小美',
+          toId: 'u_me',
+          amountHKD: 312.0,
+          groupId: 'grp_tokyo_2026',
+          status: 'pending',
+          time: '10 分鐘前'
+        }
+      ]
+    };
+
+    let currentUnlockedVaultPassword = null;
+    let unlockedVaultCache = null;
+    let isVaultUnlocked = false;
+    let pendingReceiptBlob = null;
+    let editingExpenseId = null;
+    let stagedNewGroupMembers = [];
+    let editingPlaceholderIndex = null;
+    let activeSettlementPayment = null;
+    let deferredPWAInstallPrompt = null;
+
+    // ------------------------------------------------------------------------
+    // 4. 啟動初始化：持久化儲存 + 自動備份引擎 + 凌晨 02:12 匯率檢查 + 網址參數接聽
+    // ------------------------------------------------------------------------
+    window.addEventListener('DOMContentLoaded', async () => {
+      const dateInput = document.getElementById('expDateInput');
+      if (dateInput) dateInput.value = new Date().toISOString().slice(0, 10);
+
+      if (typeof DBCrypto !== 'undefined') {
+        const persisted = await DBCrypto.initPersistentStorage();
+        await DBCrypto.openDB();
+        const badge = document.getElementById('storagePersistBadge');
+        if (badge) {
+          badge.innerHTML = persisted
+            ? '<span>🛡️ IndexedDB 永久儲存已鎖定保護</span>'
+            : '<span>🛡️ IndexedDB 加密金庫已就緒</span>';
+        }
+      }
+
+      if (typeof ExportBackup !== 'undefined') {
+        try {
+          const snapshot = await ExportBackup.loadAutoSnapshot();
+          if (snapshot && snapshot.state && Array.isArray(snapshot.state.groups)) {
+            window.appState = snapshot.state;
+            if (!Array.isArray(window.appState.confirmedFriends)) {
+              window.appState.confirmedFriends = [...DEFAULT_CONFIRMED_FRIENDS];
+            }
+          }
+        } catch (e) {}
+        ExportBackup.startAutoBackupEngine(() => window.appState, 60000);
+      }
+
+      checkAndSyncDailyRates(false);
+
+      if ('serviceWorker' in navigator) {
+        try {
+          await navigator.serviceWorker.register('./sw.js');
+        } catch (swErr) {
+          console.info('本地預覽環境略過 SW 註冊 (部署至 HTTPS 後即自動生效)');
+        }
+      }
+
+      initLocalhostDevHelperOnly();
+
+      renderAll();
+
+      // 接聽 QR 掃碼邀請 (?invite=)、跨機破鎖通知 (?sync_claim=) 與 PWA 桌面捷徑 (?action=)
+      const urlParams = new URLSearchParams(window.location.search);
+      const inviteParam = urlParams.get('invite');
+      const actionParam = urlParams.get('action');
+      const syncClaimParam = urlParams.get('sync_claim');
+
+      if (inviteParam && /^MS-[A-Z0-9]{4}-[A-Z0-9]{4}$/i.test(inviteParam)) {
+        switchTab('groups');
+        openAddFriendModal();
+        document.getElementById('friendInviteCodeInput').value = inviteParam.toUpperCase();
+        showToast(`📲 已帶入邀請碼 ${inviteParam.toUpperCase()}，請按驗證加友`);
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } else if (syncClaimParam) {
+        handleIncomingSyncClaim(syncClaimParam);
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } else if (actionParam === 'new-expense') {
+        openAddExpenseModal();
+      } else if (actionParam === 'settlement') {
+        switchTab('settle');
+      }
+    });
+
+    /**
+     * 處理跨機傳來的付款破鎖申告連結 (?sync_claim=...)
+     */
+    function handleIncomingSyncClaim(encodedClaim) {
+      try {
+        const jsonStr = decodeURIComponent(escape(atob(encodedClaim)));
+        const claim = JSON.parse(jsonStr);
+        if (!claim || !claim.pairKey || !claim.fromName) return;
+
+        const targetGroup =
+          window.appState.groups.find((g) => g.id === claim.groupId) || getCurrentGroup();
+        if (targetGroup) {
+          if (!targetGroup.settlementStatus) targetGroup.settlementStatus = {};
+          targetGroup.settlementStatus[claim.pairKey] = 'pending_confirm';
+        }
+
+        window.appState.notifications.unshift({
+          id: 'notif_' + Date.now(),
+          type: 'payment_claim',
+          pairKey: String(claim.pairKey).slice(0, 64),
+          fromId: String(claim.fromId || '').slice(0, 32),
+          fromName: String(claim.fromName).slice(0, 32),
+          toId: String(claim.toId || 'u_me').slice(0, 32),
+          amountHKD: Number(claim.amountHKD) || 0,
+          groupId: targetGroup ? targetGroup.id : window.appState.currentGroupId,
+          status: 'pending',
+          time: '剛剛 (跨機連結匯入)'
+        });
+
+        markAppStateDirty(true);
+        renderAll();
+        switchTab('notify');
+        showToast(`🔔 已匯入 ${claim.fromName} 的過數破鎖請求！請核對收款後按破鎖`);
+      } catch (err) {
+        console.warn('[SyncClaim] 解析跨機破鎖連結失敗:', err);
+      }
+    }
+
+    function initLocalhostDevHelperOnly() {
+      const host = window.location.hostname;
+      if (host === 'localhost' || host === '127.0.0.1') {
+        const devBar = document.createElement('div');
+        devBar.className = 'bg-slate-900 text-amber-300 text-[10px] px-3 py-1 flex items-center justify-between';
+        devBar.innerHTML = `
+          <span>🔧 [Localhost Dev Only] 容器寬度預覽：</span>
+          <input type="range" min="360" max="540" value="430" class="w-28 accent-orange-500"
+                 oninput="document.documentElement.style.setProperty('--shell-max-width', this.value + 'px')">
+        `;
+        const shell = document.getElementById('appShell');
+        if (shell) shell.prepend(devBar);
+      }
+    }
+
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredPWAInstallPrompt = e;
+      document.getElementById('pwaInstallBtn').classList.remove('hidden');
+    });
+
+    async function triggerPWAInstall() {
+      if (!deferredPWAInstallPrompt) return;
+      deferredPWAInstallPrompt.prompt();
+      await deferredPWAInstallPrompt.userChoice;
+      deferredPWAInstallPrompt = null;
+      document.getElementById('pwaInstallBtn').classList.add('hidden');
+    }
+
+    // ------------------------------------------------------------------------
+    // 5. 畫面渲染總控與動物頭像縮圖渲染器 (renderAnimalAvatar)
+    // ------------------------------------------------------------------------
+    function getCurrentGroup() {
+      return window.appState.groups.find((g) => g.id === window.appState.currentGroupId) || window.appState.groups[0];
+    }
+
+    function getAnimalEmoji(animalId) {
+      const found = RARE_ANIMALS.find((a) => a.id === animalId) || RARE_ANIMALS[0];
+      return found.emoji;
+    }
+
+    function renderAnimalAvatar(animalId, imgClass = 'w-full h-full rounded-full object-cover') {
+      const found = RARE_ANIMALS.find((a) => a.id === animalId) || RARE_ANIMALS[0];
+      if (found.img) {
+        return `<img src="${found.img}" alt="${escapeHTML(found.name)}" class="${imgClass}" data-alt-src="${found.rawImg || ''}" data-emoji="${found.emoji}" onerror="if(this.dataset.altSrc && this.src.indexOf(this.dataset.altSrc.replace('./',''))===-1){this.src=this.dataset.altSrc;}else{this.outerHTML='<span>'+this.dataset.emoji+'</span>';}">`;
+      }
+      return `<span>${found.emoji}</span>`;
+    }
+
+    function renderAll() {
+      const group = getCurrentGroup();
+      if (!group) return;
+
+      const { netBalancesHKD, settlements } = calculateMinimumSettlements(group);
+      group.calculatedSettlements = settlements;
+      group.netBalancesHKD = netBalancesHKD;
+
+      document.getElementById('currentGroupTitle').textContent = group.name;
+      document.getElementById('currentGroupRateBadge').innerHTML = `<span>💱 ${group.currency} 匯率 ${group.exchangeRate}</span>`;
+      document.getElementById('myUserIdDisplay').textContent = myPrivateInviteCode;
+
+      renderGroupAvatarBar(group, netBalancesHKD, settlements);
+      renderLedgerTab(group);
+      renderSettleTab(group, netBalancesHKD, settlements);
+      renderGroupsTab();
+      renderNotificationsTab();
+      renderSettingsTab();
+    }
+
+    // ------------------------------------------------------------------------
+    // 6. 最少步埋單貪婪演算法 (支援 customExtras 不平均分攤 + 公數池結餘退還)
+    // ------------------------------------------------------------------------
+    function calculateMinimumSettlements(group) {
+      const rate = Number(group.exchangeRate) || 1;
+      const netOriginal = {};
+      group.members.forEach((m) => (netOriginal[m.id] = 0));
+
+      group.expenses.forEach((exp) => {
+        const amt = Number(exp.amount) || 0;
+        const parts =
+          exp.participants && exp.participants.length > 0
+            ? exp.participants
+            : group.members.map((m) => m.id);
+
+        if (!exp.paidByPool && exp.payerId && netOriginal[exp.payerId] !== undefined) {
+          netOriginal[exp.payerId] += amt;
+        }
+
+        if (!exp.paidByPool && parts.length > 0) {
+          let extrasSum = 0;
+          const extrasMap = exp.customExtras && typeof exp.customExtras === 'object' ? exp.customExtras : {};
+          Object.entries(extrasMap).forEach(([pid, extraVal]) => {
+            const ev = Number(extraVal) || 0;
+            if (ev > 0 && netOriginal[pid] !== undefined) {
+              extrasSum += ev;
+              netOriginal[pid] -= ev;
+            }
+          });
+
+          const remainder = Math.max(0, amt - extrasSum);
+          const equalShare = remainder / parts.length;
+          parts.forEach((pid) => {
+            if (netOriginal[pid] !== undefined) netOriginal[pid] -= equalShare;
+          });
+        }
+      });
+
+      const poolBal = Number(group.poolBalance) || 0;
+      if (group.includePoolInSettlement && poolBal > 0 && group.members.length > 0) {
+        const contribs = group.poolContributions && typeof group.poolContributions === 'object'
+          ? group.poolContributions
+          : {};
+        let totalContrib = 0;
+        group.members.forEach((m) => {
+          totalContrib += Number(contribs[m.id]) || 0;
+        });
+
+        if (totalContrib > 0) {
+          group.members.forEach((m) => {
+            const c = Number(contribs[m.id]) || 0;
+            netOriginal[m.id] += poolBal * (c / totalContrib);
+          });
+        } else {
+          const perMemberRefund = poolBal / group.members.length;
+          group.members.forEach((m) => {
+            netOriginal[m.id] += perMemberRefund;
+          });
+        }
+      }
+
+      const netBalancesHKD = {};
+      const debtors = [];
+      const creditors = [];
+
+      Object.entries(netOriginal).forEach(([id, val]) => {
+        const hkd = Math.round(val * rate * 100) / 100;
+        netBalancesHKD[id] = hkd;
+        if (hkd < -0.05) debtors.push({ id, amount: -hkd });
+        else if (hkd > 0.05) creditors.push({ id, amount: hkd });
+      });
+
+      debtors.sort((a, b) => b.amount - a.amount);
+      creditors.sort((a, b) => b.amount - a.amount);
+
+      const settlements = [];
+      let i = 0;
+      let j = 0;
+
+      while (i < debtors.length && j < creditors.length) {
+        const payAmt = Math.min(debtors[i].amount, creditors[j].amount);
+        if (payAmt > 0.05) {
+          const pairKey = `${debtors[i].id}->${creditors[j].id}`;
+          const savedStatus = (group.settlementStatus && group.settlementStatus[pairKey]) || 'due';
+          settlements.push({
+            pairKey,
+            from: debtors[i].id,
+            to: creditors[j].id,
+            amountHKD: Math.round(payAmt * 100) / 100,
+            status: savedStatus
+          });
+        }
+        debtors[i].amount -= payAmt;
+        creditors[j].amount -= payAmt;
+        if (debtors[i].amount < 0.05) i++;
+        if (creditors[j].amount < 0.05) j++;
+      }
+
+      return { netBalancesHKD, settlements };
+    }
+
+    // ------------------------------------------------------------------------
+    // 7. 頂部團友頭像列（短按自己跳轉換裝、長按 0.45 秒喚醒毛玻璃說明）
+    // ------------------------------------------------------------------------
+    function renderGroupAvatarBar(group, netBalancesHKD, settlements) {
+      const bar = document.getElementById('groupAvatarBar');
+      bar.innerHTML = '';
+
+      group.members.forEach((m) => {
+        const net = netBalancesHKD[m.id] || 0;
+        const outgoing = settlements.find((s) => s.from === m.id && s.status !== 'confirmed');
+        const isPendingConfirm = outgoing && outgoing.status === 'pending_confirm';
+        const isConfirmedClean = !outgoing || net >= -0.05;
+
+        let ringClass = 'avatar-ring-clean';
+        let badgeEmoji = '🌿';
+        if (!isConfirmedClean) {
+          ringClass = isPendingConfirm ? 'avatar-ring-pending' : 'avatar-ring-debt';
+          badgeEmoji = isPendingConfirm ? '⏳' : '🥀';
+        }
+
+        const item = document.createElement('div');
+        item.className = 'flex flex-col items-center shrink-0 cursor-pointer select-none';
+
+        let pressTimer = null;
+        let longPressed = false;
+
+        item.addEventListener('pointerdown', () => {
+          longPressed = false;
+          pressTimer = setTimeout(() => {
+            longPressed = true;
+            showHelpTip(
+              `${m.name} 的即時結算狀態`,
+              `淨額：HK$ ${net.toFixed(2)}\n狀態：${isConfirmedClean ? '🌿 已結清無欠款' : isPendingConfirm ? '⏳ 已申告付款，待債主破鎖' : '🥀 尚有欠款待埋單'}`
+            );
+          }, 450);
+        });
+
+        const clearPress = () => {
+          if (pressTimer) clearTimeout(pressTimer);
+        };
+        item.addEventListener('pointerup', () => {
+          clearPress();
+          if (!longPressed) {
+            if (m.id === 'u_me') {
+              switchTab('settings');
+              showToast('🦊 已跳轉至個人角色換裝與金庫設定');
+            } else {
+              switchTab('settle');
+            }
+          }
+        });
+        item.addEventListener('pointerleave', clearPress);
+
+        item.innerHTML = `
+          <div class="relative w-12 h-12 rounded-full bg-white flex items-center justify-center text-2xl ${ringClass}">
+            ${renderAnimalAvatar(m.animal)}
+            <span class="absolute -bottom-1 -right-1 text-xs bg-white rounded-full px-0.5 shadow">${badgeEmoji}</span>
+          </div>
+          <span class="text-[11px] font-bold text-slate-700 mt-1">${escapeHTML(m.name)}</span>
+          <span class="text-[10px] font-extrabold ${net >= 0 ? 'text-emerald-600' : 'text-rose-600'}">
+            ${net >= 0 ? '+' : ''}${net.toFixed(0)}
+          </span>
+        `;
+        bar.appendChild(item);
+      });
+    }
+
+    // ------------------------------------------------------------------------
+    // 8. 記賬分頁與純前端三層架構 OCR 掃描 + 自訂加項 + 編輯/刪除帳單 (含防呆確認)
+    // ------------------------------------------------------------------------
+    function renderLedgerTab(group) {
+      const rate = Number(group.exchangeRate) || 1;
+      const poolHKD = (Number(group.poolBalance) || 0) * rate;
+      document.getElementById('poolBalanceDisplay').textContent = `${group.currency} ${(Number(group.poolBalance) || 0).toLocaleString()}`;
+      document.getElementById('poolBalanceHKDDisplay').textContent = `約折合 HK$ ${poolHKD.toFixed(2)}`;
+      document.getElementById('expenseCountBadge').textContent = `${group.expenses.length} 筆`;
+
+      const list = document.getElementById('expenseListContainer');
+      if (group.expenses.length === 0) {
+        list.innerHTML = `<div class="text-center py-8 text-xs text-slate-400 bg-white rounded-2xl border border-dashed border-slate-300">尚無消費紀錄，點擊上方「＋ 新增消費 / 本地 OCR」開始記帳！</div>`;
+        return;
+      }
+
+      const memberMap = Object.fromEntries(group.members.map((m) => [m.id, m.name]));
+      list.innerHTML = group.expenses
+        .slice()
+        .reverse()
+        .map((exp) => {
+          const amt = Number(exp.amount) || 0;
+          const hkd = amt * rate;
+          const payerLabel = exp.paidByPool ? '💰 公數資金池' : `${memberMap[exp.payerId] || exp.payerId} 先墊`;
+
+          const extraEntries =
+            exp.customExtras && typeof exp.customExtras === 'object'
+              ? Object.entries(exp.customExtras).filter(([, v]) => Number(v) > 0)
+              : [];
+          const extraBadgeHTML =
+            extraEntries.length > 0
+              ? `<div class="text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-0.5 mt-1 inline-block">
+                   ➕ 加項：${escapeHTML(extraEntries.map(([id, v]) => `${memberMap[id] || id} +${group.currency} ${v}`).join('、'))}
+                 </div>`
+              : '';
+
+          const receiptBtn = exp.receiptId
+            ? `<button onclick="previewReceiptBlob('${exp.receiptId}', '${escapeHTML(exp.title).replace(/'/g, '&#39;')}')" class="mt-1.5 inline-flex items-center gap-1 text-[11px] bg-amber-100 hover:bg-amber-200 text-amber-900 font-bold px-2.5 py-1 rounded-lg">
+                 📸 查看單據 Blob (${exp.receiptSizeKB || 38} KB)
+               </button>`
+            : '';
+
+          return `
+            <div class="bg-white rounded-2xl p-3.5 shadow-sm border border-slate-200/80 flex items-center justify-between">
+              <div class="pr-2 flex-1 min-w-0">
+                <div class="flex items-center gap-1.5">
+                  <span class="text-[10px] font-bold bg-slate-100 text-slate-600 px-2 py-0.5 rounded">${escapeHTML(exp.date)}</span>
+                  <span class="text-[10px] font-bold ${exp.paidByPool ? 'bg-amber-100 text-amber-900' : 'bg-emerald-50 text-emerald-700'} px-2 py-0.5 rounded">${escapeHTML(payerLabel)}</span>
+                </div>
+                <div class="font-black text-sm text-slate-800 mt-1 truncate">${escapeHTML(exp.title)}</div>
+                <div class="text-[11px] text-slate-500 mt-0.5">
+                  分攤：${escapeHTML((exp.participants || []).map((id) => memberMap[id] || id).join('、'))}
+                </div>
+                ${extraBadgeHTML}
+                <div>${receiptBtn}</div>
+              </div>
+              <div class="text-right shrink-0 flex flex-col items-end gap-1">
+                <div class="font-black text-sm text-slate-900">${group.currency} ${amt.toLocaleString()}</div>
+                <div class="text-[11px] font-bold text-orange-600">HK$ ${hkd.toFixed(2)}</div>
+                <div class="flex items-center gap-1 mt-0.5">
+                  <button onclick="openAddExpenseModal('${exp.id}')" title="編輯此筆帳單" class="text-[10px] text-slate-500 hover:text-orange-600 font-bold px-1.5 py-0.5 rounded hover:bg-orange-50">
+                    ✏️ 編輯
+                  </button>
+                  <button onclick="deleteExpense('${exp.id}')" title="刪除此筆帳單" class="text-[10px] text-slate-400 hover:text-rose-600 font-bold px-1.5 py-0.5 rounded hover:bg-rose-50">
+                    🗑️ 刪除
+                  </button>
+                </div>
+              </div>
+            </div>
+          `;
+        })
+        .join('');
+    }
+
+    function deleteExpense(expId) {
+      const group = getCurrentGroup();
+      const idx = group.expenses.findIndex((e) => e.id === expId);
+      if (idx === -1) return;
+      const exp = group.expenses[idx];
+
+      // [UI/UX 防呆確認] 刪除前詢問用戶，避免誤觸
+      if (!window.confirm(`確定要刪除「${exp.title} (${group.currency} ${exp.amount})」這筆帳單嗎？`)) {
+        return;
+      }
+
+      if (exp.paidByPool) {
+        group.poolBalance = (Number(group.poolBalance) || 0) + (Number(exp.amount) || 0);
+      }
+      group.expenses.splice(idx, 1);
+      markAppStateDirty(true);
+      renderAll();
+      showToast('🗑️ 已刪除該筆帳單' + (exp.paidByPool ? '（已自動回補公數池餘額）' : ''));
+    }
+
+    function openAddExpenseModal(expIdToEdit = null) {
+      const group = getCurrentGroup();
+      pendingReceiptBlob = null;
+      editingExpenseId = expIdToEdit || null;
+
+      const existingExp = editingExpenseId
+        ? group.expenses.find((e) => e.id === editingExpenseId)
+        : null;
+
+      document.getElementById('addExpenseModalTitle').textContent = existingExp
+        ? '✏️ 編輯消費賬單'
+        : '🧾 記一筆 ／ 📷 本地三層 OCR 掃單';
+      document.getElementById('saveExpenseBtn').textContent = existingExp
+        ? '💾 儲存修改'
+        : '✅ 儲存這筆賬單';
+
+      document.getElementById('expTitleInput').value = existingExp ? existingExp.title : '';
+      document.getElementById('expAmountInput').value = existingExp ? existingExp.amount : '';
+      document.getElementById('expDateInput').value = existingExp
+        ? existingExp.date
+        : new Date().toISOString().slice(0, 10);
+      document.getElementById('expCurrencyLabel').textContent = group.currency;
+      document.getElementById('ocrProgressStatus').textContent = '100% 手機本地運算，單據絕不上雲';
+
+      const currentPayerVal = existingExp
+        ? existingExp.paidByPool
+          ? 'POOL'
+          : existingExp.payerId
+        : 'u_me';
+
+      const payerSelect = document.getElementById('expPayerSelect');
+      payerSelect.innerHTML =
+        `<option value="POOL" ${currentPayerVal === 'POOL' ? 'selected' : ''}>💰 由公數資金池支付</option>` +
+        group.members
+          .map(
+            (m) =>
+              `<option value="${m.id}" ${m.id === currentPayerVal ? 'selected' : ''}>${escapeHTML(m.name)} 墊支</option>`
+          )
+          .join('');
+
+      const splitBox = document.getElementById('expSplitMembersBox');
+      splitBox.innerHTML = group.members
+        .map((m) => {
+          const isChecked = existingExp
+            ? (existingExp.participants || []).includes(m.id)
+            : true;
+          const extraVal =
+            existingExp && existingExp.customExtras && existingExp.customExtras[m.id]
+              ? existingExp.customExtras[m.id]
+              : '';
+          return `
+          <div class="flex items-center justify-between gap-2 bg-slate-50 px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs font-bold">
+            <label class="flex items-center gap-2 flex-1 min-w-0 cursor-pointer">
+              <input type="checkbox" class="exp-split-chk accent-orange-600" value="${m.id}" ${isChecked ? 'checked' : ''}>
+              <span class="w-5 h-5 rounded-full overflow-hidden inline-flex items-center justify-center bg-white shrink-0">${renderAnimalAvatar(m.animal)}</span>
+              <span class="truncate">${escapeHTML(m.name)}</span>
+            </label>
+            <div class="flex items-center gap-1 shrink-0">
+              <span class="text-[10px] text-slate-400">＋加項</span>
+              <input type="number" step="0.01" min="0" placeholder="0" value="${extraVal}" data-member-id="${m.id}"
+                     class="exp-extra-input w-20 px-2 py-1 text-xs text-right border border-slate-300 rounded-md bg-white font-bold text-amber-900">
+            </div>
+          </div>
+        `;
+        })
+        .join('');
+
+      document.getElementById('addExpenseModal').classList.remove('hidden');
+    }
+
+    async function handleReceiptScanUpload(event) {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+
+      const statusEl = document.getElementById('ocrProgressStatus');
+      try {
+        if (typeof OCRScanner !== 'undefined') {
+          const result = await OCRScanner.scanReceipt(file, {
+            onProgress: (msg) => {
+              statusEl.textContent = msg;
+            }
+          });
+
+          document.getElementById('expTitleInput').value = result.merchant || '';
+          if (result.amount > 0) document.getElementById('expAmountInput').value = result.amount;
+          if (result.date) document.getElementById('expDateInput').value = result.date;
+
+          pendingReceiptBlob = result.processedBlob || file;
+          const savedKB = Math.round(pendingReceiptBlob.size / 1024);
+          statusEl.textContent = `✅ ${result.engine}完成！單據已微縮為 ${savedKB}KB 原生 Blob（請核對金額）`;
+          showToast(`🎯 已定位單據：${result.merchant} (${result.amount || '請核對金額'})`);
+        }
+      } catch (err) {
+        statusEl.textContent = '⚠️ 自動辨識略過，已保留壓縮單據，請手動輸入金額';
+        pendingReceiptBlob = file;
+      }
+    }
+
+    function handleQuickTextOcr() {
+      const raw = document.getElementById('rawReceiptTextPaste').value;
+      if (!raw.trim()) return showToast('請先貼上收據文字');
+      if (typeof OCRScanner !== 'undefined') {
+        const res = OCRScanner.parseReceiptTextKeyless(raw);
+        document.getElementById('expTitleInput').value = res.merchant;
+        if (res.amount > 0) document.getElementById('expAmountInput').value = res.amount;
+        if (res.date) document.getElementById('expDateInput').value = res.date;
+        showToast(`⚡ 錨點解析成功：${res.merchant} ($${res.amount})`);
+      }
+    }
+
+    async function saveNewExpense() {
+      const group = getCurrentGroup();
+      const title = document.getElementById('expTitleInput').value.trim() || '聚餐/旅遊消費';
+      const amount = parseFloat(document.getElementById('expAmountInput').value);
+      const date = document.getElementById('expDateInput').value || new Date().toISOString().slice(0, 10);
+      const payerVal = document.getElementById('expPayerSelect').value;
+
+      if (isNaN(amount) || amount <= 0) {
+        return showToast('⚠️ 請輸入大於 0 的消費金額');
+      }
+
+      const checkedIds = Array.from(document.querySelectorAll('.exp-split-chk:checked')).map((el) => el.value);
+      if (checkedIds.length === 0) {
+        return showToast('⚠️ 請至少勾選 1 位參與分攤的團友');
+      }
+
+      const customExtras = {};
+      let extrasTotal = 0;
+      document.querySelectorAll('.exp-extra-input').forEach((inp) => {
+        const mid = inp.getAttribute('data-member-id');
+        const val = parseFloat(inp.value);
+        if (mid && !isNaN(val) && val > 0) {
+          customExtras[mid] = val;
+          extrasTotal += val;
+          if (!checkedIds.includes(mid)) checkedIds.push(mid);
+        }
+      });
+
+      if (extrasTotal > amount) {
+        return showToast(`⚠️ 個人加項總和 (${extrasTotal}) 不能超過消費總金額 (${amount})`);
+      }
+
+      const existingExp = editingExpenseId
+        ? group.expenses.find((e) => e.id === editingExpenseId)
+        : null;
+
+      const paidByPool = payerVal === 'POOL';
+      let availablePool = Number(group.poolBalance) || 0;
+      if (existingExp && existingExp.paidByPool) {
+        availablePool += Number(existingExp.amount) || 0;
+      }
+
+      if (paidByPool && availablePool < amount) {
+        return showToast('⚠️ 公數池餘額不足，請先注資');
+      }
+
+      let receiptId = existingExp ? existingExp.receiptId : null;
+      let receiptSizeKB = existingExp ? existingExp.receiptSizeKB : 0;
+
+      if (pendingReceiptBlob && typeof DBCrypto !== 'undefined') {
+        receiptId = 'rcpt_' + (crypto.randomUUID ? crypto.randomUUID() : Date.now() + '_' + Math.random().toString(36).slice(2));
+        const savedRecord = await DBCrypto.saveBlobToMediaVault(receiptId, pendingReceiptBlob, group.id);
+        receiptSizeKB = savedRecord.sizeKB || Math.round(pendingReceiptBlob.size / 1024);
+      }
+
+      group.poolBalance = paidByPool ? availablePool - amount : availablePool;
+
+      if (existingExp) {
+        existingExp.title = title;
+        existingExp.amount = amount;
+        existingExp.date = date;
+        existingExp.payerId = paidByPool ? 'POOL' : payerVal;
+        existingExp.paidByPool = paidByPool;
+        existingExp.participants = checkedIds;
+        existingExp.customExtras = customExtras;
+        existingExp.receiptId = receiptId;
+        existingExp.receiptSizeKB = receiptSizeKB;
+      } else {
+        group.expenses.push({
+          id: 'exp_' + (crypto.randomUUID ? crypto.randomUUID() : Date.now() + '_' + Math.random().toString(36).slice(2)),
+          title,
+          amount,
+          date,
+          payerId: paidByPool ? 'POOL' : payerVal,
+          paidByPool,
+          participants: checkedIds,
+          customExtras,
+          receiptId,
+          receiptSizeKB
+        });
+      }
+
+      editingExpenseId = null;
+      closeModal('addExpenseModal');
+      markAppStateDirty(true);
+      renderAll();
+      showToast(existingExp ? '💾 賬單修改已儲存！' : '✅ 賬單已儲存！');
+    }
+
+    async function previewReceiptBlob(receiptId, title) {
+      if (typeof DBCrypto === 'undefined') return;
+      const objUrl = await DBCrypto.loadBlobObjectURL(receiptId);
+      if (!objUrl) {
+        return showToast('⚠️ 此單據已被清理或尚未存入本地庫');
+      }
+      document.getElementById('receiptModalTitle').textContent = `📸 ${title} — 單據原圖`;
+      document.getElementById('receiptModalImg').src = objUrl;
+      document.getElementById('receiptPreviewModal').classList.remove('hidden');
+    }
+
+    // ------------------------------------------------------------------------
+    // 9. 最少步埋單、真實金庫找數彈窗與完團匯出 (PDF / Excel / CSV)
+    // ------------------------------------------------------------------------
+    function toggleIncludePoolInSettlement(checked) {
+      const group = getCurrentGroup();
+      group.includePoolInSettlement = !!checked;
+      markAppStateDirty(true);
+      renderAll();
+      showToast(checked ? '💰 已將公數池餘額納入最終多退少補結算！' : '💰 公數池餘額已設為獨立保留');
+    }
+
+    function renderSettleTab(group, netBalancesHKD, settlements) {
+      const memberMap = Object.fromEntries(group.members.map((m) => [m.id, m]));
+      const settleContainer = document.getElementById('settlementListContainer');
+
+      const poolToggle = document.getElementById('includePoolToggle');
+      if (poolToggle) poolToggle.checked = !!group.includePoolInSettlement;
+      const poolHint = document.getElementById('settlePoolRefundHint');
+      if (poolHint) {
+        const poolBal = Number(group.poolBalance) || 0;
+        const rate = Number(group.exchangeRate) || 1;
+        poolHint.textContent = `目前公數結餘：${group.currency} ${poolBal.toLocaleString()} (約 HK$ ${(poolBal * rate).toFixed(2)})`;
+      }
+
+      if (settlements.length === 0) {
+        settleContainer.innerHTML = `
+          <div class="p-4 bg-emerald-50 border border-emerald-200 rounded-xl text-center text-xs font-black text-emerald-800">
+            🎉 全團帳目已完全結清！所有團友頭像皆為清白綠環！
+          </div>`;
+      } else {
+        settleContainer.innerHTML = settlements
+          .map((s) => {
+            const fromM = memberMap[s.from] || { name: s.from, animal: 'fox' };
+            const toM = memberMap[s.to] || { name: s.to, animal: 'bunny' };
+
+            let actionHTML = '';
+            if (s.status === 'confirmed') {
+              actionHTML = `<span class="text-xs font-black bg-emerald-100 text-emerald-800 px-3 py-1.5 rounded-xl">✅ 已破鎖結清</span>`;
+            } else if (s.status === 'pending_confirm') {
+              actionHTML = `<button onclick="creditorConfirmUnlock('${s.pairKey}')" class="bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs px-3 py-1.5 rounded-xl shadow">
+                              ⏳ 待債主按破鎖
+                            </button>`;
+            } else {
+              actionHTML = `<button onclick="openPayConfirmModal('${s.pairKey}', '${s.from}', '${s.to}', ${s.amountHKD})"
+                                    class="bg-orange-600 hover:bg-orange-700 text-white font-black text-xs px-3 py-1.5 rounded-xl shadow">
+                              💸 立即找數
+                            </button>`;
+            }
+
+            return `
+              <div class="bg-slate-50 rounded-xl p-3 border border-slate-200 flex items-center justify-between">
+                <div class="flex items-center gap-2.5">
+                  <div class="w-9 h-9 rounded-full overflow-hidden bg-white border border-slate-200 flex items-center justify-center text-lg shrink-0">
+                    ${renderAnimalAvatar(fromM.animal)}
+                  </div>
+                  <div>
+                    <div class="text-xs font-black text-slate-800">${escapeHTML(fromM.name)} ➔ ${escapeHTML(toM.name)}</div>
+                    <div class="text-xs font-black text-rose-600">應付 HK$ ${s.amountHKD.toFixed(2)}</div>
+                  </div>
+                </div>
+                ${actionHTML}
+              </div>
+            `;
+          })
+          .join('');
+      }
+
+      const netContainer = document.getElementById('netBalanceListContainer');
+      netContainer.innerHTML = group.members
+        .map((m) => {
+          const val = netBalancesHKD[m.id] || 0;
+          return `
+            <div class="flex items-center justify-between text-xs py-1.5 border-b border-slate-100 last:border-0">
+              <span class="font-bold text-slate-700 flex items-center gap-2">
+                <span class="w-6 h-6 rounded-full overflow-hidden inline-flex items-center justify-center bg-slate-100 shrink-0">${renderAnimalAvatar(m.animal)}</span>
+                <span>${escapeHTML(m.name)}</span>
+              </span>
+              <span class="font-black ${val >= 0 ? 'text-emerald-600' : 'text-rose-600'}">
+                ${val >= 0 ? '應收回 +HK$ ' + val.toFixed(2) : '需付 -HK$ ' + Math.abs(val).toFixed(2)}
+              </span>
+            </div>
+          `;
+        })
+        .join('');
+    }
+
+    function copyTextToClipboard(text, label) {
+      if (!text) return;
+      navigator.clipboard.writeText(text);
+      showToast(`📋 已複製${label}：${text}`);
+    }
+
+    async function openPayConfirmModal(pairKey, fromId, toId, amountHKD) {
+      const group = getCurrentGroup();
+      const fromM = group.members.find((m) => m.id === fromId) || { name: fromId };
+      const toM = group.members.find((m) => m.id === toId) || { name: toId };
+      activeSettlementPayment = {
+        pairKey,
+        fromId,
+        fromName: fromM.name,
+        toId,
+        toName: toM.name,
+        amountHKD
+      };
+
+      await renderPayModalContent();
+      document.getElementById('payConfirmModal').classList.remove('hidden');
+    }
+
+    async function renderPayModalContent() {
+      if (!activeSettlementPayment) return;
+      const { fromName, toId, toName, amountHKD } = activeSettlementPayment;
+      const detailBox = document.getElementById('payModalDetailBox');
+      const isPayingMe = toId === window.appState.currentUser.id;
+
+      if (!isPayingMe) {
+        const group = getCurrentGroup();
+        const creditorMember = group.members.find((m) => m.id === toId);
+        const savedNote = (creditorMember && creditorMember.paymentNote) || '';
+
+        detailBox.innerHTML = `
+          <div class="font-black text-sm text-slate-900">${escapeHTML(fromName)} 需支付予 ${escapeHTML(toName)}</div>
+          <div class="text-lg font-black text-orange-600">HK$ ${Number(amountHKD).toFixed(2)}</div>
+          <div class="pt-2 border-t border-slate-200 space-y-2 text-slate-600">
+            <div class="p-2 bg-amber-50 border border-amber-200 rounded-lg text-[11px] text-amber-900">
+              💡 收款人為團友 <strong>${escapeHTML(toName)}</strong>（非本機金庫持有人）。請向對方核對 FPS / PayMe 收款碼，或於下方備註對方收款號碼：
+            </div>
+            <div class="flex gap-1.5">
+              <input id="peerPaymentNoteInput" type="text" value="${escapeHTML(savedNote)}" placeholder="備註 ${escapeHTML(toName)} 的 FPS / PayMe 電話"
+                     class="flex-1 px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white">
+              <button onclick="savePeerPaymentNote('${toId}')" class="bg-slate-800 text-amber-300 text-xs font-bold px-2.5 rounded-lg">儲存備註</button>
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      if (!isVaultUnlocked || !unlockedVaultCache) {
+        detailBox.innerHTML = `
+          <div class="font-black text-sm text-slate-900">${escapeHTML(fromName)} 需支付予 ${escapeHTML(toName)} (你本人)</div>
+          <div class="text-lg font-black text-orange-600">HK$ ${Number(amountHKD).toFixed(2)}</div>
+          <div class="pt-2 border-t border-slate-200 space-y-2">
+            <div class="text-[11px] font-bold text-rose-700 bg-rose-50 border border-rose-200 p-2 rounded-lg">
+              🔒 你的個人收款金庫目前處於加密鎖定狀態。請輸入金庫密碼以解密顯示真實 FPS / PayMe / 銀行戶口與收款 QR Code：
+            </div>
+            <div class="flex gap-1.5">
+              <input id="payModalVaultPwdInput" type="password" placeholder="輸入金庫密碼 (首次預設 1234)"
+                     class="flex-1 px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white">
+              <button onclick="unlockVaultInsidePayModal()" class="bg-orange-600 hover:bg-orange-700 text-white font-black text-xs px-3 py-1.5 rounded-lg shadow">
+                🔓 解密顯示
+              </button>
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      const v = unlockedVaultCache;
+      const bankLabel = HK_BANK_NAMES[v.bankCode] || v.bankCode || '未設定銀行';
+      const safePaymeUrl = isSafeHttpsUrl(v.paymeLink) ? v.paymeLink.trim() : '';
+
+      let qrHtml = '';
+      if (v.qrMediaId && typeof DBCrypto !== 'undefined' && currentUnlockedVaultPassword) {
+        try {
+          const qrUrl = await DBCrypto.loadEncryptedQRBlobURL(v.qrMediaId, currentUnlockedVaultPassword);
+          if (qrUrl) {
+            qrHtml = `
+              <div class="pt-2 text-center">
+                <div class="text-[10px] font-bold text-slate-500 mb-1">📸 掃描債主收款 QR Code (AES-GCM 即時解密)：</div>
+                <img src="${qrUrl}" alt="收款 QR" class="w-36 h-36 mx-auto rounded-xl border border-amber-300 object-contain bg-white p-1">
+              </div>
+            `;
+          }
+        } catch (_) {}
+      }
+
+      detailBox.innerHTML = `
+        <div class="flex items-center justify-between">
+          <div class="font-black text-sm text-slate-900">${escapeHTML(fromName)} 需支付予 ${escapeHTML(toName)}</div>
+          <span class="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full">🔓 金庫真實資料</span>
+        </div>
+        <div class="text-lg font-black text-orange-600">HK$ ${Number(amountHKD).toFixed(2)}</div>
+        <div class="pt-2 border-t border-slate-200 space-y-1.5 text-slate-700">
+          <div class="flex items-center justify-between">
+            <span>⚡ <strong>FPS 轉數快：</strong> ${escapeHTML(v.fpsId || '未設定')}</span>
+            ${v.fpsId ? `<button onclick="copyTextToClipboard('${escapeHTML(v.fpsId).replace(/'/g, "\\'")}', 'FPS 識別碼')" class="text-[10px] bg-slate-800 text-amber-300 font-bold px-2 py-0.5 rounded">複製</button>` : ''}
+          </div>
+          <div class="flex items-center justify-between">
+            <span class="truncate pr-2">🔴 <strong>PayMe 連結：</strong> ${escapeHTML(safePaymeUrl || '未設定')}</span>
+            ${safePaymeUrl ? `<a href="${escapeHTML(safePaymeUrl)}" target="_blank" rel="noopener noreferrer" class="text-[10px] bg-rose-600 text-white font-bold px-2 py-0.5 rounded shrink-0">開啟</a>` : ''}
+          </div>
+          <div>🏦 <strong>銀行轉帳：</strong> ${escapeHTML(bankLabel)} ${escapeHTML(v.bankAccount || '')}</div>
+          <div>👤 <strong>持有人姓名核對：</strong> ${escapeHTML(v.holderName || '未設定')}</div>
+          ${qrHtml}
+        </div>
+      `;
+    }
+
+    async function unlockVaultInsidePayModal() {
+      const pwdInput = document.getElementById('payModalVaultPwdInput');
+      const pwd = (pwdInput && pwdInput.value) || '1234';
+      document.getElementById('vaultPasswordInput').value = pwd;
+      await handleUnlockVault();
+      if (isVaultUnlocked) {
+        await renderPayModalContent();
+      }
+    }
+
+    function savePeerPaymentNote(memberId) {
+      const inp = document.getElementById('peerPaymentNoteInput');
+      if (!inp) return;
+      const group = getCurrentGroup();
+      const m = group.members.find((x) => x.id === memberId);
+      if (m) {
+        m.paymentNote = inp.value.trim();
+        markAppStateDirty(true);
+        showToast(`✅ 已儲存 ${m.name} 的收款備註`);
+      }
+    }
+
+    async function confirmIHavePaid(shareSyncLink = false) {
+      if (!activeSettlementPayment) return;
+      const group = getCurrentGroup();
+      if (!group.settlementStatus) group.settlementStatus = {};
+      group.settlementStatus[activeSettlementPayment.pairKey] = 'pending_confirm';
+
+      const claimPayload = {
+        pairKey: activeSettlementPayment.pairKey,
+        fromId: activeSettlementPayment.fromId,
+        fromName: activeSettlementPayment.fromName,
+        toId: activeSettlementPayment.toId,
+        amountHKD: activeSettlementPayment.amountHKD,
+        groupId: group.id
+      };
+
+      window.appState.notifications.unshift({
+        id: 'notif_' + Date.now(),
+        type: 'payment_claim',
+        ...claimPayload,
+        status: 'pending',
+        time: '剛剛'
+      });
+
+      closeModal('payConfirmModal');
+      markAppStateDirty(true);
+      renderAll();
+
+      if (shareSyncLink) {
+        try {
+          const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(claimPayload))));
+          const syncUrl = `${window.location.origin}${window.location.pathname}?sync_claim=${encodeURIComponent(encoded)}`;
+          const shareText = `💸 【混賬過數破鎖通知】${claimPayload.fromName} 已過數 HK$ ${Number(claimPayload.amountHKD).toFixed(2)} 畀 ${activeSettlementPayment.toName}！債主請點擊連結確認收妥並斬斷荊棘鎖鏈：${syncUrl}`;
+          if (navigator.share) {
+            await navigator.share({ title: '混賬過數破鎖通知', text: shareText, url: syncUrl });
+          } else {
+            await navigator.clipboard.writeText(shareText);
+            showToast('📋 已複製「跨機破鎖連結」，請貼給債主點擊確認！');
+          }
+          return;
+        } catch (_) {}
+      }
+
+      showToast('✋ 已標記付款！等待債主確認破鎖');
+    }
+
+    function creditorConfirmUnlock(pairKey, notifId = null) {
+      const group = getCurrentGroup();
+      if (!group.settlementStatus) group.settlementStatus = {};
+      group.settlementStatus[pairKey] = 'confirmed';
+
+      if (notifId) {
+        const n = window.appState.notifications.find((x) => x.id === notifId);
+        if (n) n.status = 'confirmed';
+      }
+      markAppStateDirty(true);
+      renderAll();
+      showToast('🗡️ 荊棘鎖鏈已斬斷！帳目正式結清！');
+    }
+
+    function handleExportReport(format) {
+      if (typeof ExportBackup === 'undefined') return showToast('⚠️ 匯出模組尚未載入');
+      const group = getCurrentGroup();
+      const payload = {
+        name: group.name,
+        currency: group.currency,
+        exchangeRate: group.exchangeRate,
+        members: group.members,
+        expenses: group.expenses,
+        settlements: group.calculatedSettlements || [],
+        poolBalance: group.poolBalance,
+        includePoolInSettlement: !!group.includePoolInSettlement
+      };
+
+      if (format === 'csv') {
+        ExportBackup.exportToCSV(payload);
+        showToast('📑 已匯出 UTF-8 BOM CSV 報表！');
+      } else if (format === 'excel') {
+        ExportBackup.exportToExcel(payload);
+        showToast('📊 已匯出雙分頁 Excel (.xls) 報表！');
+      } else if (format === 'pdf') {
+        ExportBackup.exportToPDF(payload);
+      }
+    }
+
+    async function handlePurgeGroupMedia() {
+      const group = getCurrentGroup();
+      if (!window.confirm(`確定要清除「${group.name}」所有本地收據圖片 Blob 嗎？清除後文字帳目仍會保留，但單據原圖無法復原。`)) {
+        return;
+      }
+      let count = 0;
+      if (typeof DBCrypto !== 'undefined') {
+        count = await DBCrypto.purgeGroupMediaBlobs(group.id);
+      }
+      group.expenses.forEach((e) => {
+        e.receiptId = null;
+        e.receiptSizeKB = 0;
+      });
+      markAppStateDirty(true);
+      renderAll();
+      showToast(`🧹 已銷毀本團單據 Blob（共釋放 ${count} 張收據圖檔）！`);
+    }
+
+    // ------------------------------------------------------------------------
+    // 10. 群組分頁：私密邀請碼 / 本地 QR Code 加好友 (持久化至 appState) ＋ 開新團
+    // ------------------------------------------------------------------------
+    function renderGroupsTab() {
+      const friends = getConfirmedFriendsList();
+      document.getElementById('friendCountLabel').textContent = `共 ${friends.length} 位`;
+
+      document.getElementById('confirmedFriendsBar').innerHTML = friends
+        .map(
+          (f) => `
+          <div class="flex items-center gap-2 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-xl shrink-0">
+            <div class="w-8 h-8 rounded-full overflow-hidden bg-white border border-slate-200 flex items-center justify-center text-xl shrink-0">
+              ${renderAnimalAvatar(f.animal)}
+            </div>
+            <div>
+              <div class="text-xs font-black text-slate-800">${escapeHTML(f.name)}</div>
+              <div class="text-[10px] text-slate-400">${escapeHTML(f.handle)}</div>
+            </div>
+          </div>
+        `
+        )
+        .join('');
+
+      document.getElementById('groupSwitchList').innerHTML = window.appState.groups
+        .map((g) => {
+          const isCurrent = g.id === window.appState.currentGroupId;
+          return `
+            <div onclick="selectGroup('${g.id}')"
+                 class="p-3 rounded-xl border cursor-pointer flex items-center justify-between ${
+                   isCurrent ? 'bg-amber-50 border-orange-500' : 'bg-slate-50 border-slate-200'
+                 }">
+              <div>
+                <div class="font-black text-sm text-slate-800">${escapeHTML(g.name)}</div>
+                <div class="text-[11px] text-slate-500">${g.members.length} 位成員 ｜ ${g.expenses.length} 筆消費 (${g.currency})</div>
+              </div>
+              <span class="text-xs font-bold ${isCurrent ? 'text-orange-600' : 'text-slate-400'}">
+                ${isCurrent ? '● 使用中' : '切換 ➔'}
+              </span>
+            </div>
+          `;
+        })
+        .join('');
+    }
+
+    function selectGroup(groupId) {
+      window.appState.currentGroupId = groupId;
+      markAppStateDirty(false);
+      renderAll();
+      switchTab('ledger');
+      showToast('🏕️ 已切換群組！');
+    }
+
+    function openAddFriendModal() {
+      const inviteUrl = `${window.location.origin}${window.location.pathname}?invite=${encodeURIComponent(myPrivateInviteCode)}`;
+      const qrDataUrl = LocalQR.toDataURL(inviteUrl);
+      document.getElementById('myInviteCodeText').textContent = myPrivateInviteCode;
+      document.getElementById('myInviteQrImg').src = qrDataUrl;
+      document.getElementById('friendInviteCodeInput').value = '';
+      document.getElementById('addFriendModal').classList.remove('hidden');
+    }
+
+    function copyMyInviteLink() {
+      const inviteUrl = `${window.location.origin}${window.location.pathname}?invite=${encodeURIComponent(myPrivateInviteCode)}`;
+      navigator.clipboard.writeText(`加入我的《混賬》好友！私密邀請碼：${myPrivateInviteCode} 或點連結：${inviteUrl}`);
+      showToast('📋 已複製本人私密邀請碼與連結！');
+    }
+
+    function refreshMyInviteCode() {
+      const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+      const bytes = crypto.getRandomValues(new Uint8Array(8));
+      let p1 = '', p2 = '';
+      for (let i = 0; i < 4; i++) p1 += chars[bytes[i] % chars.length];
+      for (let i = 4; i < 8; i++) p2 += chars[bytes[i] % chars.length];
+      myPrivateInviteCode = `MS-${p1}-${p2}`;
+      localStorage.setItem('messy_my_invite_code', myPrivateInviteCode);
+      window.appState.currentUser.handle = myPrivateInviteCode;
+      markAppStateDirty(false);
+      openAddFriendModal();
+      renderAll();
+      showToast(`🔄 已換發新邀請碼 ${myPrivateInviteCode}（舊碼已作廢）`);
+    }
+
+    function submitFriendInviteCode() {
+      const code = document.getElementById('friendInviteCodeInput').value.trim().toUpperCase();
+      if (!/^MS-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(code)) {
+        return showToast('⚠️ 請輸入格式正確的邀請碼 (MS-XXXX-XXXX)');
+      }
+      if (code === myPrivateInviteCode) {
+        return showToast('⚠️ 這是你自己的邀請碼喔！');
+      }
+      const friends = getConfirmedFriendsList();
+      if (friends.some((f) => f.handle === code)) {
+        return showToast('ℹ️ 此邀請碼已在你的常用好友清單中');
+      }
+      friends.push({
+        id: 'u_' + Date.now(),
+        handle: code,
+        name: `好友 (${code.slice(3, 7)})`,
+        animal: 'otter',
+        status: 'friend'
+      });
+      closeModal('addFriendModal');
+      markAppStateDirty(true);
+      renderGroupsTab();
+      showToast(`🎉 已透過私密邀請碼 ${code} 新增常用好友！`);
+    }
+
+    function openCreateGroupModal() {
+      document.getElementById('newGroupNameInput').value = '';
+      autoFillExchangeRate(document.getElementById('newGroupCurrencySelect').value);
+      stagedNewGroupMembers = [
+        {
+          id: window.appState.currentUser.id,
+          name: window.appState.currentUser.name,
+          animal: window.appState.currentUser.animal,
+          isAppUser: true,
+          isPlaceholder: false
+        },
+        {
+          id: 'ghost_' + Date.now(),
+          name: '點擊設定',
+          animal: null,
+          isAppUser: false,
+          isPlaceholder: true
+        }
+      ];
+      renderCreateGroupModalUI();
+      document.getElementById('createGroupModal').classList.remove('hidden');
+    }
+
+    function autoFillExchangeRate(currency) {
+      const latestRates = loadCachedRates().ratesToHKD;
+      document.getElementById('newGroupRateInput').value = latestRates[currency] || 1;
+    }
+
+    function renderCreateGroupModalUI() {
+      const friends = getConfirmedFriendsList();
+      const swipeBar = document.getElementById('swipeFrequentFriendsBar');
+      swipeBar.innerHTML = friends
+        .map((f) => {
+          const alreadyIn = stagedNewGroupMembers.some((m) => m.id === f.id);
+          return `
+            <div class="flex items-center gap-2 bg-white border border-slate-200 px-2.5 py-1.5 rounded-xl shrink-0 shadow-sm">
+              <div class="w-7 h-7 rounded-full overflow-hidden bg-slate-100 flex items-center justify-center text-lg shrink-0">
+                ${renderAnimalAvatar(f.animal)}
+              </div>
+              <span class="text-xs font-bold text-slate-800">${escapeHTML(f.name)}</span>
+              ${
+                alreadyIn
+                  ? `<span class="text-[11px] text-emerald-600 font-black px-1">已入席</span>`
+                  : `<button onclick="stageFrequentFriend('${f.id}')" class="w-6 h-6 rounded-full bg-orange-600 hover:bg-orange-700 text-white font-black text-sm flex items-center justify-center shadow">＋</button>`
+              }
+            </div>
+          `;
+        })
+        .join('');
+
+      const grid = document.getElementById('stagedGroupMembersGrid');
+      grid.innerHTML = stagedNewGroupMembers
+        .map((m, idx) => {
+          if (m.isPlaceholder) {
+            return `
+              <div onclick="openPlaceholderConfigModal(${idx})"
+                   class="flex flex-col items-center cursor-pointer group">
+                <div class="w-12 h-12 rounded-full border-2 border-dashed border-slate-400 bg-slate-200/70 hover:bg-slate-300 flex items-center justify-center text-xl font-black text-slate-600 transition">
+                  ＋
+                </div>
+                <span class="text-[10px] font-bold text-slate-500 mt-1">按此設無App友</span>
+              </div>
+            `;
+          }
+          return `
+            <div class="flex flex-col items-center relative">
+              <div class="w-12 h-12 rounded-full bg-white border-2 border-orange-500 overflow-hidden flex items-center justify-center text-2xl shadow-sm">
+                ${renderAnimalAvatar(m.animal)}
+              </div>
+              <span class="text-[10px] font-bold text-slate-800 mt-1">${escapeHTML(m.name)}</span>
+            </div>
+          `;
+        })
+        .join('');
+    }
+
+    function stageFrequentFriend(friendId) {
+      const friends = getConfirmedFriendsList();
+      const f = friends.find((u) => u.id === friendId);
+      if (!f || stagedNewGroupMembers.some((m) => m.id === f.id)) return;
+
+      const lastIdx = stagedNewGroupMembers.length - 1;
+      stagedNewGroupMembers.splice(lastIdx, 0, {
+        id: f.id,
+        name: f.name.split(' ')[0],
+        animal: f.animal,
+        isAppUser: true,
+        isPlaceholder: false
+      });
+      renderCreateGroupModalUI();
+    }
+
+    function addGreyPlaceholderSlot() {
+      stagedNewGroupMembers.push({
+        id: 'ghost_' + Date.now() + Math.random().toString(16).slice(2, 5),
+        name: '點擊設定',
+        animal: null,
+        isAppUser: false,
+        isPlaceholder: true
+      });
+      renderCreateGroupModalUI();
+    }
+
+    let selectedPlaceholderAnimal = 'chick';
+    function openPlaceholderConfigModal(idx) {
+      editingPlaceholderIndex = idx;
+      selectedPlaceholderAnimal = 'chick';
+      document.getElementById('placeholderNameInput').value = '';
+      renderPlaceholderAnimalPicker();
+      document.getElementById('configPlaceholderModal').classList.remove('hidden');
+    }
+
+    function renderPlaceholderAnimalPicker() {
+      document.getElementById('placeholderAnimalGrid').innerHTML = RARE_ANIMALS.map(
+        (a) => `
+        <button type="button" onclick="selectedPlaceholderAnimal='${a.id}'; renderPlaceholderAnimalPicker();"
+                class="p-1.5 rounded-xl border flex flex-col items-center justify-center gap-1 ${
+                  selectedPlaceholderAnimal === a.id ? 'border-orange-600 bg-orange-50 ring-2 ring-orange-500/30' : 'border-slate-200 bg-slate-50'
+                }">
+          <div class="w-10 h-10 rounded-full overflow-hidden flex items-center justify-center text-2xl bg-white">
+            ${renderAnimalAvatar(a.id)}
+          </div>
+          <span class="text-[10px] font-bold text-slate-700 truncate w-full text-center">${a.name}</span>
+        </button>
+      `
+      ).join('');
+    }
+
+    function savePlaceholderMemberConfig() {
+      const name = document.getElementById('placeholderNameInput').value.trim();
+      if (!name) return showToast('⚠️ 請輸入這位無 App 團友的暱稱');
+
+      if (editingPlaceholderIndex !== null && stagedNewGroupMembers[editingPlaceholderIndex]) {
+        stagedNewGroupMembers[editingPlaceholderIndex] = {
+          id: 'ghost_' + Date.now(),
+          name,
+          animal: selectedPlaceholderAnimal,
+          isAppUser: false,
+          isPlaceholder: false
+        };
+      }
+
+      if (!stagedNewGroupMembers.some((m) => m.isPlaceholder)) {
+        addGreyPlaceholderSlot();
+      }
+
+      closeModal('configPlaceholderModal');
+      renderCreateGroupModalUI();
+    }
+
+    function confirmCreateNewGroup() {
+      const name = document.getElementById('newGroupNameInput').value.trim();
+      if (!name) return showToast('⚠️ 請輸入新群組名稱');
+
+      const finalMembers = stagedNewGroupMembers.filter((m) => !m.isPlaceholder);
+      if (finalMembers.length < 2) {
+        return showToast('⚠️ 群組至少需要 2 位有效成員');
+      }
+
+      const currency = document.getElementById('newGroupCurrencySelect').value;
+      const exchangeRate = parseFloat(document.getElementById('newGroupRateInput').value) || 1;
+      const newGroupId = 'grp_' + crypto.getRandomValues(new Uint32Array(1))[0].toString(16);
+
+      window.appState.groups.unshift({
+        id: newGroupId,
+        name,
+        currency,
+        exchangeRate,
+        poolBalance: 0,
+        includePoolInSettlement: false,
+        poolContributions: {},
+        members: finalMembers,
+        expenses: [],
+        settlementStatus: {}
+      });
+
+      window.appState.currentGroupId = newGroupId;
+
+      window.appState.notifications.unshift({
+        id: 'notif_' + Date.now(),
+        type: 'group_created',
+        groupName: name,
+        memberNames: finalMembers.map((m) => m.name).join('、'),
+        time: '剛剛'
+      });
+
+      closeModal('createGroupModal');
+      markAppStateDirty(true);
+      renderAll();
+      switchTab('ledger');
+      showToast(`🚀 群組「${name}」已建立並通知所有團友！`);
+    }
+
+    // ------------------------------------------------------------------------
+    // 11. 通知中心與個人設定（AES-GCM 金庫 + 密碼強度評估 + 記憶體徹底清理）
+    // ------------------------------------------------------------------------
+    function renderNotificationsTab() {
+      const list = document.getElementById('notificationListContainer');
+      const unreadDot = document.getElementById('notifyUnreadDot');
+      const hasPending = window.appState.notifications.some((n) => n.status === 'pending');
+      unreadDot.classList.toggle('hidden', !hasPending);
+
+      if (window.appState.notifications.length === 0) {
+        list.innerHTML = `<div class="text-xs text-slate-400 text-center py-6">暫無新通知</div>`;
+        return;
+      }
+
+      list.innerHTML = window.appState.notifications
+        .map((n) => {
+          if (n.type === 'group_created') {
+            return `
+              <div class="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs space-y-1">
+                <div class="font-black text-amber-950">🏕️ 新團成立通知：${escapeHTML(n.groupName)}</div>
+                <div class="text-slate-600">入團成員：${escapeHTML(n.memberNames)}</div>
+                <div class="text-[10px] text-slate-400">${escapeHTML(n.time)}</div>
+              </div>
+            `;
+          }
+
+          const isConfirmed = n.status === 'confirmed';
+          return `
+            <div class="p-3 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between">
+              <div class="text-xs space-y-0.5 pr-2">
+                <div class="font-black text-slate-800">💸 ${escapeHTML(n.fromName)} 申告已過數 HK$ ${Number(n.amountHKD).toFixed(2)}</div>
+                <div class="text-[11px] text-slate-500">請核對你的 FPS / PayMe / 銀行戶口是否已收妥</div>
+                <div class="text-[10px] text-slate-400">${escapeHTML(n.time)}</div>
+              </div>
+              ${
+                isConfirmed
+                  ? `<span class="text-[11px] font-black text-emerald-600 shrink-0">✅ 已破鎖</span>`
+                  : `<button onclick="creditorConfirmUnlock('${escapeHTML(n.pairKey || n.fromId + '->' + n.toId)}', '${escapeHTML(n.id)}')"
+                             class="bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs px-3 py-2 rounded-xl shrink-0 shadow">
+                       🗡️ 確認收妥破鎖
+                     </button>`
+              }
+            </div>
+          `;
+        })
+        .join('');
+    }
+
+    function simulateFriendPayment() {
+      const group = getCurrentGroup();
+      window.appState.notifications.unshift({
+        id: 'notif_' + Date.now(),
+        type: 'payment_claim',
+        pairKey: 'u_manson->u_me',
+        fromId: 'u_manson',
+        fromName: '阿強',
+        toId: 'u_me',
+        amountHKD: 312.0,
+        groupId: group.id,
+        status: 'pending',
+        time: '剛剛'
+      });
+      markAppStateDirty(false);
+      renderAll();
+      showToast('⚡ 已收到阿強的過數確認請求！');
+    }
+
+    function renderSettingsTab() {
+      const me = window.appState.currentUser;
+      document.getElementById('myProfileAvatarPreview').innerHTML = renderAnimalAvatar(me.animal);
+      document.getElementById('myProfileNameInput').value = me.name;
+
+      document.getElementById('animalPickerGrid').innerHTML = RARE_ANIMALS.map(
+        (a) => `
+          <button onclick="selectMyAnimal('${a.id}')"
+                  class="p-1.5 rounded-xl border flex flex-col items-center justify-center gap-1 ${
+                    me.animal === a.id ? 'border-orange-600 bg-orange-50 shadow-sm ring-2 ring-orange-500/30' : 'border-slate-200 bg-slate-50'
+                  }">
+            <div class="w-11 h-11 rounded-full overflow-hidden flex items-center justify-center text-2xl bg-white">
+              ${renderAnimalAvatar(a.id)}
+            </div>
+            <span class="text-[10px] font-bold text-slate-700 truncate w-full text-center">${a.name}</span>
+          </button>
+        `
+      ).join('');
+    }
+
+    function selectMyAnimal(animalId) {
+      window.appState.currentUser.animal = animalId;
+      window.appState.groups.forEach((g) => {
+        const m = g.members.find((x) => x.id === 'u_me');
+        if (m) m.animal = animalId;
+      });
+      markAppStateDirty(true);
+      renderAll();
+      showToast('🐾 已更換你的稀有動物外觀！');
+    }
+
+    function saveMyProfile() {
+      const newName = document.getElementById('myProfileNameInput').value.trim();
+      if (!newName) return;
+      window.appState.currentUser.name = newName;
+      window.appState.groups.forEach((g) => {
+        const m = g.members.find((x) => x.id === 'u_me');
+        if (m) m.name = newName;
+      });
+      markAppStateDirty(true);
+      renderAll();
+      showToast('✅ 個人暱稱已更新！');
+    }
+
+    function updatePasswordStrengthUI(pwd) {
+      const banner = document.getElementById('vaultPasswordStrengthBanner');
+      if (!banner) return;
+      const isStrong =
+        typeof DBCrypto !== 'undefined' && typeof DBCrypto.evaluatePasswordStrength === 'function'
+          ? DBCrypto.evaluatePasswordStrength(pwd).isStrong
+          : String(pwd).length >= 8 && /[A-Za-z]/.test(pwd) && /\d/.test(pwd);
+
+      banner.classList.remove('hidden');
+      if (isStrong) {
+        banner.className = 'p-2 rounded-xl text-[11px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200';
+        banner.textContent = '🛡️ 金庫密碼強度良好（已受 600,000 次 PBKDF2 + AES-GCM 保護）';
+      } else {
+        banner.className = 'p-2 rounded-xl text-[11px] font-bold bg-amber-50 text-amber-900 border border-amber-300';
+        banner.textContent = '⚠️ 資安建議：目前使用預設或簡易密碼，建議於下方設定 8 位以上英數混合新密碼，防止備份檔遭離線暴力破解。';
+      }
+    }
+
+    async function handleUnlockVault() {
+      const pwd = document.getElementById('vaultPasswordInput').value || '1234';
+      if (typeof DBCrypto === 'undefined') return;
+
+      try {
+        const vaultData = await DBCrypto.unlockEncryptedVault(pwd);
+
+        if (vaultData) {
+          currentUnlockedVaultPassword = pwd;
+          unlockedVaultCache = vaultData;
+          isVaultUnlocked = true;
+
+          document.getElementById('vaultFpsInput').value = vaultData.fpsId || '';
+          document.getElementById('vaultPaymeInput').value = vaultData.paymeLink || '';
+          document.getElementById('vaultBankCodeSelect').value = vaultData.bankCode || '';
+          document.getElementById('vaultBankAccountInput').value = vaultData.bankAccount || '';
+          document.getElementById('vaultHolderNameInput').value = vaultData.holderName || '';
+
+          if (vaultData.qrMediaId) {
+            const qrUrl = await DBCrypto.loadEncryptedQRBlobURL(vaultData.qrMediaId, pwd);
+            if (qrUrl) {
+              document.getElementById('vaultQrPreviewImg').src = qrUrl;
+              document.getElementById('vaultQrPreviewWrap').classList.remove('hidden');
+            }
+          }
+        } else {
+          if (pwd !== '1234') {
+            return showToast('❌ 金庫密碼錯誤（請檢查是否已更改）');
+          }
+          currentUnlockedVaultPassword = pwd;
+          unlockedVaultCache = {
+            fpsId: '91234567',
+            paymeLink: 'https://payme.hsbc/ahming',
+            bankCode: '004',
+            bankAccount: '123-456789-001',
+            holderName: 'CHAN T** M***',
+            qrMediaId: null
+          };
+          isVaultUnlocked = true;
+
+          document.getElementById('vaultFpsInput').value = unlockedVaultCache.fpsId;
+          document.getElementById('vaultPaymeInput').value = unlockedVaultCache.paymeLink;
+          document.getElementById('vaultBankCodeSelect').value = unlockedVaultCache.bankCode;
+          document.getElementById('vaultBankAccountInput').value = unlockedVaultCache.bankAccount;
+          document.getElementById('vaultHolderNameInput').value = unlockedVaultCache.holderName;
+        }
+
+        updatePasswordStrengthUI(pwd);
+        document.getElementById('vaultLockBadge').textContent = '🔓 已透過 AES-GCM 解密';
+        document.getElementById('vaultLockBadge').className = 'text-[11px] bg-emerald-100 text-emerald-800 font-bold px-2.5 py-1 rounded-full';
+        document.getElementById('vaultFormContainer').classList.remove('hidden');
+        showToast('🔓 金庫已透過 PBKDF2 + AES-GCM 解鎖！');
+      } catch (err) {
+        if (err && err.message && err.message.includes('嘗試次數過多')) {
+          showToast(`⏳ ${err.message}`);
+        } else {
+          showToast('❌ 金庫密碼錯誤，AES-GCM 拒絕解密！');
+        }
+      }
+    }
+
+    async function handleVaultQrUpload(event) {
+      const file = event.target.files && event.target.files[0];
+      if (!file || typeof DBCrypto === 'undefined') return;
+
+      const pwd = document.getElementById('vaultNewPasswordInput').value.trim() || currentUnlockedVaultPassword || '1234';
+      const saved = await DBCrypto.saveEncryptedQRBlob('my_private_qr_blob', file, pwd);
+      const decryptedUrl = await DBCrypto.loadEncryptedQRBlobURL('my_private_qr_blob', pwd);
+
+      document.getElementById('vaultQrPreviewImg').src = decryptedUrl;
+      document.getElementById('vaultQrStatusText').textContent = `✅ 已 AES-GCM 加密存入 media_vault_store (${saved.sizeKB}KB)`;
+      document.getElementById('vaultQrPreviewWrap').classList.remove('hidden');
+      if (unlockedVaultCache) unlockedVaultCache.qrMediaId = 'my_private_qr_blob';
+      showToast('🖼️ 收款 QR Code 已完成二進位加密儲存！');
+    }
+
+    async function handleSaveEncryptedVault() {
+      const bankCode = document.getElementById('vaultBankCodeSelect').value;
+      const bankAccount = document.getElementById('vaultBankAccountInput').value.trim();
+      const holderName = document.getElementById('vaultHolderNameInput').value.trim();
+      let paymeLink = document.getElementById('vaultPaymeInput').value.trim();
+
+      if (paymeLink && /^payme\.hsbc\//i.test(paymeLink)) {
+        paymeLink = 'https://' + paymeLink;
+      }
+      if (paymeLink && !isSafeHttpsUrl(paymeLink)) {
+        return showToast('⚠️ PayMe 連結必須為 https:// 開頭之安全網址');
+      }
+
+      const cleanedAcct = bankAccount.replace(/[\s-]/g, '');
+      if (bankCode || bankAccount || holderName) {
+        if (!bankCode) return showToast('⚠️ 請從下拉選單選擇香港銀行名稱');
+        if (!/^\d{6,14}$/.test(cleanedAcct)) return showToast('⚠️ 請輸入有效的 6–14 位數字銀行戶口號碼');
+        if (holderName.length < 2) return showToast('⚠️ 請填寫持有人姓名（供團友過數核對）');
+      }
+
+      const newPwd = document.getElementById('vaultNewPasswordInput').value.trim();
+      const targetPassword = newPwd || currentUnlockedVaultPassword || '1234';
+      if (targetPassword.length < 4) {
+        return showToast('⚠️ 金庫密碼至少需要 4 位字元');
+      }
+
+      const payload = {
+        fpsId: document.getElementById('vaultFpsInput').value.trim(),
+        paymeLink,
+        bankCode,
+        bankAccount,
+        holderName,
+        qrMediaId: 'my_private_qr_blob'
+      };
+
+      await DBCrypto.saveEncryptedVault(targetPassword, payload);
+      currentUnlockedVaultPassword = targetPassword;
+      unlockedVaultCache = payload;
+      document.getElementById('vaultNewPasswordInput').value = '';
+      updatePasswordStrengthUI(targetPassword);
+      showToast('🔐 已透過 PBKDF2 + AES-GCM (256-bit) 加密鎖入金庫！');
+    }
+
+    function lockVaultUI() {
+      isVaultUnlocked = false;
+      currentUnlockedVaultPassword = null;
+      unlockedVaultCache = null;
+
+      document.getElementById('vaultPasswordInput').value = '';
+      document.getElementById('vaultNewPasswordInput').value = '';
+      document.getElementById('vaultFpsInput').value = '';
+      document.getElementById('vaultPaymeInput').value = '';
+      document.getElementById('vaultBankCodeSelect').value = '';
+      document.getElementById('vaultBankAccountInput').value = '';
+      document.getElementById('vaultHolderNameInput').value = '';
+      document.getElementById('vaultQrPreviewImg').src = '';
+      document.getElementById('vaultQrPreviewWrap').classList.add('hidden');
+      document.getElementById('vaultPasswordStrengthBanner').classList.add('hidden');
+
+      if (typeof DBCrypto !== 'undefined' && typeof DBCrypto.revokeAllObjectURLs === 'function') {
+        DBCrypto.revokeAllObjectURLs();
+      }
+
+      document.getElementById('vaultFormContainer').classList.add('hidden');
+      document.getElementById('vaultLockBadge').textContent = '🔒 已鎖定';
+      document.getElementById('vaultLockBadge').className = 'text-[11px] bg-rose-100 text-rose-800 font-bold px-2.5 py-1 rounded-full';
+      showToast('🔒 金庫已鎖上並清除記憶體暫存');
+    }
+
+    async function handleDownloadFullBackup() {
+      if (typeof ExportBackup === 'undefined') return;
+      await ExportBackup.downloadFullBackupFile(window.appState, true);
+      showToast('⬇️ 已下載包含單據 Blob 與加密金庫的完整備份檔！');
+    }
+
+    async function handleRestoreBackupFile(event) {
+      const file = event.target.files && event.target.files[0];
+      if (!file || typeof ExportBackup === 'undefined') return;
+      try {
+        const res = await ExportBackup.restoreFromBackupFile(file);
+        if (res.restoredState) {
+          window.appState = res.restoredState;
+          if (!Array.isArray(window.appState.confirmedFriends)) {
+            window.appState.confirmedFriends = [...DEFAULT_CONFIRMED_FRIENDS];
+          }
+          renderAll();
+        }
+        showToast(`✅ 還原成功！已恢復帳目與 ${res.mediaRestoredCount} 張單據 Blob`);
+      } catch (err) {
+        showToast('❌ 備份檔格式無效或損毀');
+      }
+    }
+
+    function openPoolTopupModal() {
+      const group = getCurrentGroup();
+      document.getElementById('poolModalCurrency').textContent = group.currency;
+      const sel = document.getElementById('poolContributorSelect');
+      if (sel) {
+        sel.innerHTML =
+          `<option value="ALL">👥 全員平均夾錢注資 (每人平分)</option>` +
+          group.members.map((m) => `<option value="${m.id}">👤 由 ${escapeHTML(m.name)} 單獨出資</option>`).join('');
+      }
+      document.getElementById('poolTopupModal').classList.remove('hidden');
+    }
+
+    function confirmPoolTopup() {
+      const amt = parseFloat(document.getElementById('poolTopupAmountInput').value);
+      if (isNaN(amt) || amt <= 0) return;
+      const group = getCurrentGroup();
+      const contributor = document.getElementById('poolContributorSelect')?.value || 'ALL';
+
+      group.poolBalance = (Number(group.poolBalance) || 0) + amt;
+      if (!group.poolContributions || typeof group.poolContributions !== 'object') {
+        group.poolContributions = {};
+      }
+
+      if (contributor === 'ALL' && group.members.length > 0) {
+        const perMember = amt / group.members.length;
+        group.members.forEach((m) => {
+          group.poolContributions[m.id] = (Number(group.poolContributions[m.id]) || 0) + perMember;
+        });
+      } else {
+        group.poolContributions[contributor] = (Number(group.poolContributions[contributor]) || 0) + amt;
+      }
+
+      closeModal('poolTopupModal');
+      markAppStateDirty(true);
+      renderAll();
+      showToast(`💰 已向公數資金池注資 ${group.currency} ${amt.toLocaleString()}`);
+    }
+
+    function switchTab(tabName) {
+      const tabs = ['ledger', 'settle', 'groups', 'notify', 'settings', 'legal'];
+      tabs.forEach((t) => {
+        const el = document.getElementById('tab-' + t);
+        if (el) el.classList.toggle('hidden', t !== tabName);
+        const dockBtn = document.getElementById('dock-' + t);
+        if (dockBtn) dockBtn.classList.toggle('active', t === tabName);
+      });
+    }
+
+    function showHelpTip(title, body) {
+      document.getElementById('helpTipTitle').textContent = '💡 ' + title;
+      document.getElementById('helpTipBody').textContent = body;
+      document.getElementById('helpTipModal').classList.remove('hidden');
+    }
+
+    function closeModal(modalId) {
+      const el = document.getElementById(modalId);
+      if (el) el.classList.add('hidden');
+      if (modalId === 'receiptPreviewModal') {
+        const img = document.getElementById('receiptModalImg');
+        if (img && img.src && typeof DBCrypto !== 'undefined' && typeof DBCrypto.revokeObjectURL === 'function') {
+          DBCrypto.revokeObjectURL(img.src);
+          img.src = '';
+        }
+      }
+    }
+
+    let toastTimer = null;
+    function showToast(msg) {
+      const banner = document.getElementById('toastBanner');
+      banner.textContent = msg;
+      banner.classList.remove('hidden');
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => banner.classList.add('hidden'), 2800);
+    }
+  </script>
+</body>
+</html>
