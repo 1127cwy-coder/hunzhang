@@ -2,7 +2,7 @@
 <html lang="zh-HK">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>混賬 Messy Split v7.4 — 夾錢同行 PWA 正式版</title>
 
   <!-- PWA 設定與桌面圖示 -->
@@ -27,6 +27,7 @@
     button, select { text-transform: none; cursor: pointer; }
     button, .dock-btn { user-select: none; }
     input, textarea, select { user-select: text; }
+    input, textarea, select { user-select: text; font-size: 16px !important; }
     img, svg, video, canvas { display: block; max-width: 100%; height: auto; }
     code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
     h1, h2, h3, h4, p, ul, li { margin: 0; }
@@ -404,39 +405,75 @@
     .max-w-\[140px\] { max-width: 140px; }
     .max-w-\[64px\] { max-width: 64px; }
 
-    /* [任務 3C] 向右拉動顯示編輯與刪除抽屜 */
+    /* [美術升級] 向左拉動從右側滑出柔和雙色編輯與刪除抽屜 */
     .swipe-item-wrap {
       position: relative;
       overflow: hidden;
       border-radius: 1rem;
+      background-color: #F8FAFC;
     }
-    .swipe-actions-left {
+    .swipe-actions-right {
       position: absolute;
       top: 0;
       bottom: 0;
-      left: 0;
-      width: 132px;
+      right: 0;
+      width: 136px;
       display: flex;
       align-items: stretch;
       z-index: 1;
-      border-radius: 1rem 0 0 1rem;
+      border-radius: 0 1rem 1rem 0;
       overflow: hidden;
+      padding: 4px;
+      gap: 4px;
+      background-color: #F1ECE1;
     }
-    .swipe-actions-left.single-action {
-      width: 72px;
+    .swipe-actions-right.single-action {
+      width: 74px;
     }
+    .swipe-btn-edit {
+      flex: 1;
+      background: linear-gradient(180deg, #FEF3C7 0%, #FDE68A 100%);
+      color: #92400E;
+      border: 1px solid #FCD34D;
+      border-radius: 0.75rem;
+      font-weight: 900;
+      font-size: 11px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+      transition: transform 0.15s;
+    }
+    .swipe-btn-edit:active { transform: scale(0.95); }
+    .swipe-btn-del {
+      flex: 1;
+      background: linear-gradient(180deg, #FFE4E6 0%, #FECDD3 100%);
+      color: #9F1239;
+      border: 1px solid #FDA4AF;
+      border-radius: 0.75rem;
+      font-weight: 900;
+      font-size: 11px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+      transition: transform 0.15s;
+    }
+    .swipe-btn-del:active { transform: scale(0.95); }
     .swipe-content-card {
       position: relative;
       z-index: 2;
-      transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+      transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1);
       touch-action: pan-y;
-      border-left: 4px solid #FDBA74;
+      border-right: 3px solid #FDE68A;
     }
-    .swipe-item-wrap.swiped-right .swipe-content-card {
-      transform: translateX(132px);
+    .swipe-item-wrap.swiped-left .swipe-content-card {
+      transform: translateX(-136px);
     }
-    .swipe-item-wrap.swiped-right.single-swipe .swipe-content-card {
-      transform: translateX(72px);
+    .swipe-item-wrap.swiped-left.single-swipe .swipe-content-card {
+      transform: translateX(-74px);
     }
 
     /* [目標 1] 鎖死不能橫屏：當偵測到行動裝置橫向握持時顯示全屏鎖定遮罩 */
@@ -2336,7 +2373,7 @@
     }
 
     // ------------------------------------------------------------------------
-    // 6. 最少步埋單貪婪演算法 (v7.4 支援主幣/外幣公數單獨出資、跨幣公數折抵與退還)
+    // 6. 最少步埋單貪婪演算法 (v7.4 修正版：全員平均夾公數絕不令本人誤顯欠款)
     // ------------------------------------------------------------------------
     function calculateMinimumSettlements(group) {
       const mainC = getGroupMainCurrency(group);
@@ -2346,7 +2383,9 @@
       const memberCount = group.members.length || 1;
       group.members.forEach((m) => (netInMain[m.id] = 0));
 
-      // (A) 計算公數池注資：若為「單獨出資 (contributor !== 'ALL')」，出資人代全團墊支公數
+      // (A) 計算公數池注資：
+      // - 若為「👥 全員平均夾錢 (ALL)」，大家已現場各自出資，個人代墊淨額為 0（絕不產生欠款）
+      // - 若為「👤 單獨出資 (contributor !== 'ALL')」，出資人代全團墊支公數
       const poolBals = ensureGroupPoolBalances(group);
       (group.poolTopups || []).forEach((t) => {
         const tCurr = t.currency || foreignC;
@@ -2376,7 +2415,8 @@
             : group.members.map((m) => m.id);
 
         if (exp.paidByPool) {
-          // 公數池由全體團友共同擁有，支付時相當於全團每人出資 amtInMain / memberCount 替參與者買單
+          // 公數池由全體團友共同擁有（每人享有 1/memberCount 權益）
+          // 若全團全員參與且無個人加項，此加項與下方減項完全抵銷（淨額保持 0）
           const poolOwnerShare = amtInMain / memberCount;
           group.members.forEach((m) => {
             netInMain[m.id] += poolOwnerShare;
@@ -2404,38 +2444,36 @@
         }
       });
 
-      // (C) [雙層改良] 若勾選「將公數池餘額納入最終結算退還」：
-      // 1. 固定錨定公數保管人（優先讀取 group.poolHolderId，否則固定為開團首位成員 members[0].id，跨機絕不因 'u_me' 視角改變而浮動）
-      // 2. 嚴格按各團友於 group.poolContributions 的累計注資比例退還（若無注資紀錄才平分），確保零和守恆
+      // (C) 若勾選「將公數池餘額納入最終結算退還」：
+      // 只有當公數池是由特定團友「單獨出資」墊支時，才將剩餘公數按單獨出資比例沖銷退還；
+      // 若全員皆為平均夾錢 (ALL)，剩餘公數現金直接每人平分領回（於 UI 顯示每人可分回金額），不扣減個人淨額！
       const totalPoolInMain =
         (Number(poolBals[mainC]) || 0) +
         (foreignC !== mainC ? (Number(poolBals[foreignC]) || 0) * groupRate : 0);
 
       if (group.includePoolInSettlement && totalPoolInMain > 0.01 && group.members.length > 0) {
-        const holderId =
-          group.poolHolderId && netInMain[group.poolHolderId] !== undefined
-            ? group.poolHolderId
-            : group.members[0].id;
-        netInMain[holderId] -= totalPoolInMain;
+        const soloContribs = {};
+        let totalSoloContrib = 0;
+        group.members.forEach((m) => (soloContribs[m.id] = 0));
 
-        const contribs =
-          group.poolContributions && typeof group.poolContributions === 'object'
-            ? group.poolContributions
-            : {};
-        let totalContrib = 0;
-        group.members.forEach((m) => {
-          totalContrib += Number(contribs[m.id]) || 0;
+        (group.poolTopups || []).forEach((t) => {
+          if (t.contributor && t.contributor !== 'ALL' && soloContribs[t.contributor] !== undefined) {
+            const tCurr = t.currency || foreignC;
+            const tAmt = Number(t.amount) || 0;
+            const tRate = tCurr === mainC ? 1 : Number(t.rateAtCreation) || groupRate;
+            const val = tAmt * tRate;
+            soloContribs[t.contributor] += val;
+            totalSoloContrib += val;
+          }
         });
 
-        if (totalContrib > 0.01) {
+        // 若存在單獨出資公數，將未花完的公數餘額沖銷單獨出資者的代墊款
+        if (totalSoloContrib > 0.01) {
+          const refundableSolo = Math.min(totalPoolInMain, totalSoloContrib);
           group.members.forEach((m) => {
-            const c = Number(contribs[m.id]) || 0;
-            netInMain[m.id] += totalPoolInMain * (c / totalContrib);
-          });
-        } else {
-          const refundPerMember = totalPoolInMain / memberCount;
-          group.members.forEach((m) => {
-            netInMain[m.id] += refundPerMember;
+            const ratio = soloContribs[m.id] / totalSoloContrib;
+            netInMain[m.id] -= refundableSolo * ratio;
+            netInMain[m.id] += refundableSolo / memberCount;
           });
         }
       }
@@ -2691,7 +2729,7 @@
 
           return `
             <div class="swipe-item-wrap shadow-sm">
-              <div class="swipe-actions-left">
+              <div class="swipe-actions-right">
                 <button onclick="openAddExpenseModal('${exp.id}')" class="flex-1 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs flex flex-col items-center justify-center gap-0.5">
                   <span>✏️</span><span>編輯</span>
                 </button>
@@ -2716,7 +2754,7 @@
                 <div class="text-right shrink-0 flex flex-col items-end gap-0.5">
                   <div class="font-black text-sm text-slate-900">${escapeHTML(expCurr)} ${amt.toLocaleString()}</div>
                   <div class="text-[11px] font-bold text-orange-600">${escapeHTML(mainC)} ${amtInMain.toFixed(2)}</div>
-                  <div class="text-[9px] text-slate-400 mt-1">👉 右拉編輯/刪除</div>
+                  <div class="text-[9px] text-slate-400 mt-1">👉 左拉編輯/刪除</div>
                 </div>
               </div>
             </div>
@@ -3460,6 +3498,82 @@
     // ------------------------------------------------------------------------
     // 10. 群組分頁：私密邀請碼 / 本地 QR Code 加好友 ＋ 雙幣開新團
     // ------------------------------------------------------------------------
+   function sortGroupsPinnedFirst() {
+      if (!Array.isArray(window.appState.groups)) return;
+      window.appState.groups.sort((a, b) => (b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0));
+    }
+
+    function togglePinGroup(groupId, event) {
+      if (event) event.stopPropagation();
+      const target = window.appState.groups.find((g) => g.id === groupId);
+      if (!target) return;
+      target.isPinned = !target.isPinned;
+      sortGroupsPinnedFirst();
+      markAppStateDirty(true, false);
+      renderGroupsTab();
+      showToast(target.isPinned ? `📌 已將「${target.name}」置頂！` : `📍 已取消「${target.name}」置頂`);
+    }
+
+    async function deleteGroupById(groupId, event) {
+      if (event) event.stopPropagation();
+      const idx = window.appState.groups.findIndex((g) => g.id === groupId);
+      if (idx === -1) return;
+      const target = window.appState.groups[idx];
+
+      const ok = window.confirm(
+        `🗑️ 確定要刪除群組「${target.name}」（共 ${target.expenses.length} 筆消費）嗎？\n\n刪除後會一併清理該群組的本地單據圖片且無法復原。`
+      );
+      if (!ok) return;
+
+      if (typeof DBCrypto !== 'undefined' && typeof DBCrypto.purgeGroupMediaBlobs === 'function') {
+        try {
+          await DBCrypto.purgeGroupMediaBlobs(groupId);
+        } catch (_) {}
+      }
+
+      window.appState.groups.splice(idx, 1);
+
+      if (window.appState.groups.length === 0) {
+        const mainC = getGlobalMainCurrency();
+        const fallbackId = 'grp_' + Date.now();
+        window.appState.groups.push({
+          id: fallbackId,
+          name: '我的旅行分帳團 ✈️',
+          mainCurrency: mainC,
+          currency: 'JPY',
+          exchangeRate: getPairExchangeRate('JPY', mainC),
+          isPinned: false,
+          poolTopups: [],
+          poolBalances: { [mainC]: 0, JPY: 0 },
+          poolBalance: 0,
+          includePoolInSettlement: false,
+          poolHolderId: 'u_me',
+          poolContributions: {},
+          members: [
+            {
+              id: 'u_me',
+              name: window.appState.currentUser.name,
+              animal: window.appState.currentUser.animal,
+              handle: myPrivateInviteCode,
+              isAppUser: true
+            }
+          ],
+          deletedMemberIds: [],
+          expenses: [],
+          settlementStatus: {}
+        });
+      }
+
+      sortGroupsPinnedFirst();
+      if (!window.appState.groups.some((g) => g.id === window.appState.currentGroupId)) {
+        window.appState.currentGroupId = window.appState.groups[0].id;
+      }
+
+      markAppStateDirty(true, false);
+      renderAll();
+      showToast(`🗑️ 已刪除群組「${target.name}」`);
+    }
+
     function renderGroupsTab() {
       const friends = getConfirmedFriendsList();
       document.getElementById('friendCountLabel').textContent = `共 ${friends.length} 位`;
@@ -3480,6 +3594,7 @@
         )
         .join('');
 
+      sortGroupsPinnedFirst();
       document.getElementById('groupSwitchList').innerHTML = window.appState.groups
         .map((g) => {
           const isCurrent = g.id === window.appState.currentGroupId;
@@ -3488,16 +3603,29 @@
           const currPairText = fCurr === mCurr ? `單幣 ${mCurr}` : `雙幣 ${fCurr} + ${mCurr}`;
           return `
             <div onclick="selectGroup('${g.id}')"
-                 class="p-3 rounded-xl border cursor-pointer flex items-center justify-between ${
-                   isCurrent ? 'bg-amber-50 border-orange-500' : 'bg-slate-50 border-slate-200'
+                 class="p-3 rounded-xl border cursor-pointer flex items-center justify-between gap-2 ${
+                   isCurrent ? 'bg-amber-50 border-orange-500 shadow-sm' : 'bg-slate-50 border-slate-200'
                  }">
-              <div>
-                <div class="font-black text-sm text-slate-800">${escapeHTML(g.name)}</div>
-                <div class="text-[11px] text-slate-500">${g.members.length} 位成員 ｜ ${g.expenses.length} 筆消費 (${escapeHTML(currPairText)})</div>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-1.5">
+                  ${g.isPinned ? `<span class="text-[10px] bg-amber-200 text-amber-950 font-black px-1.5 py-0.5 rounded shrink-0">📌 置頂</span>` : ''}
+                  <div class="font-black text-sm text-slate-800 truncate">${escapeHTML(g.name)}</div>
+                </div>
+                <div class="text-[11px] text-slate-500 mt-0.5">${g.members.length} 位成員 ｜ ${g.expenses.length} 筆消費 (${escapeHTML(currPairText)})</div>
               </div>
-              <span class="text-xs font-bold ${isCurrent ? 'text-orange-600' : 'text-slate-400'}">
-                ${isCurrent ? '● 使用中' : '切換 ➔'}
-              </span>
+              <div class="flex items-center gap-1.5 shrink-0">
+                <button type="button" onclick="togglePinGroup('${g.id}', event)" title="${g.isPinned ? '取消置頂' : '置頂此群組'}"
+                        class="text-xs px-2 py-1 rounded-lg border ${g.isPinned ? 'bg-amber-100 border-amber-300 text-amber-900 font-black' : 'bg-white border-slate-200 text-slate-500'}">
+                  📌
+                </button>
+                <button type="button" onclick="deleteGroupById('${g.id}', event)" title="刪除此群組"
+                        class="text-xs px-2 py-1 rounded-lg border bg-white hover:bg-rose-50 border-slate-200 text-rose-600 font-bold">
+                  🗑️
+                </button>
+                <span class="text-xs font-bold pl-1 ${isCurrent ? 'text-orange-600' : 'text-slate-400'}">
+                  ${isCurrent ? '● 使用中' : '切換'}
+                </span>
+              </div>
             </div>
           `;
         })
@@ -3993,7 +4121,7 @@
           if (n.type === 'group_created') {
             return `
               <div class="swipe-item-wrap single-swipe">
-                <div class="swipe-actions-left single-action">
+                <div class="swipe-actions-right single-action">
                   <button onclick="deleteNotification('${escapeHTML(n.id)}')" class="flex-1 bg-rose-600 hover:bg-rose-700 text-white font-black text-xs flex flex-col items-center justify-center gap-0.5">
                     <span>🗑️</span><span>刪除</span>
                   </button>
@@ -4002,7 +4130,7 @@
                   <div class="space-y-1">
                     <div class="font-black text-amber-950">🏕️ 新團成立通知：${escapeHTML(n.groupName)}</div>
                     <div class="text-slate-600">入團成員：${escapeHTML(n.memberNames)}</div>
-                    <div class="text-[10px] text-slate-400">${escapeHTML(n.time)} ｜ 👉 右拉刪除</div>
+                    <div class="text-[10px] text-slate-400">${escapeHTML(n.time)} ｜ 👉 左拉刪除</div>
                   </div>
                 </div>
               </div>
@@ -4012,7 +4140,7 @@
           const isConfirmed = n.status === 'confirmed';
           return `
             <div class="swipe-item-wrap single-swipe">
-              <div class="swipe-actions-left single-action">
+              <div class="swipe-actions-right single-action">
                 <button onclick="deleteNotification('${escapeHTML(n.id)}')" class="flex-1 bg-rose-600 hover:bg-rose-700 text-white font-black text-xs flex flex-col items-center justify-center gap-0.5">
                   <span>🗑️</span><span>刪除</span>
                 </button>
@@ -4021,7 +4149,7 @@
                 <div class="text-xs space-y-0.5 pr-1 flex-1">
                   <div class="font-black text-slate-800">💸 ${escapeHTML(n.fromName)} 申告已過數 HK$ ${Number(n.amountHKD).toFixed(2)}</div>
                   <div class="text-[11px] text-slate-500">請核對你的 FPS / PayMe / 銀行戶口是否已收妥</div>
-                  <div class="text-[10px] text-slate-400">${escapeHTML(n.time)} ｜ 👉 右拉刪除</div>
+                  <div class="text-[10px] text-slate-400">${escapeHTML(n.time)} ｜ 👉 左拉刪除</div>
                 </div>
                 <div class="flex items-center gap-1.5 shrink-0">
                   ${
@@ -4511,7 +4639,7 @@
               : `👤 ${memberMap[t.contributor] || t.contributor} 單獨出資`;
           return `
             <div class="swipe-item-wrap">
-              <div class="swipe-actions-left">
+              <div class="swipe-actions-right">
                 <button onclick="openPoolTopupModal('${escapeHTML(t.id)}')" class="flex-1 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs flex flex-col items-center justify-center gap-0.5">
                   <span>✏️</span><span>修改</span>
                 </button>
@@ -4530,7 +4658,7 @@
                 </div>
                 <div class="text-right shrink-0">
                   <div class="text-xs font-black text-orange-600">折合 ${escapeHTML(mainC)} ${tMain.toFixed(2)}</div>
-                  <div class="text-[9px] text-slate-400 mt-1">👉 右拉修改/刪除</div>
+                  <div class="text-[9px] text-slate-400 mt-1">👉 左拉修改/刪除</div>
                 </div>
               </div>
             </div>
@@ -5158,8 +5286,8 @@
 
       document.addEventListener('pointerdown', (e) => {
         const clickedWrap = e.target.closest('.swipe-item-wrap');
-        document.querySelectorAll('.swipe-item-wrap.swiped-right').forEach((el) => {
-          if (el !== clickedWrap) el.classList.remove('swiped-right');
+        document.querySelectorAll('.swipe-item-wrap.swiped-left').forEach((el) => {
+          if (el !== clickedWrap) el.classList.remove('swiped-left');
         });
 
         if (!clickedWrap || e.target.closest('button')) {
@@ -5181,11 +5309,12 @@
           isTracking = false;
           return;
         }
-        if (dx > 28 && Math.abs(dx) > Math.abs(dy) * 1.3) {
-          swipeTargetWrap.classList.add('swiped-right');
+        // 手指向左拉動 (dx < -28) -> 展開右側抽屜
+        if (dx < -28 && Math.abs(dx) > Math.abs(dy) * 1.3) {
+          swipeTargetWrap.classList.add('swiped-left');
           isTracking = false;
-        } else if (dx < -20 && Math.abs(dx) > Math.abs(dy)) {
-          swipeTargetWrap.classList.remove('swiped-right');
+        } else if (dx > 20 && Math.abs(dx) > Math.abs(dy)) {
+          swipeTargetWrap.classList.remove('swiped-left');
           isTracking = false;
         }
       });

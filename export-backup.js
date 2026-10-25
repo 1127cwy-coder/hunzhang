@@ -318,7 +318,7 @@ const ExportBackup = (() => {
   }
 
   // ==========================================================================
-  // 2. 匯出 Excel (SpreadsheetML 三分頁工作表：1_消費明細、2_公數注資明細、3_最少步埋單)
+  // 2. 匯出 Excel (相容電腦 Excel 與手機直接開啟預覽之 UTF-8 BOM 結構化表格，絕不暴露 XML 原始碼)
   // ==========================================================================
   function exportToExcel(groupData) {
     const {
@@ -329,134 +329,108 @@ const ExportBackup = (() => {
       settlements = []
     } = groupData || {};
 
-    const { mainC, foreignC, gRate } = resolvePoolSummary(groupData || {});
+    const { mainC, foreignC, gRate, summaryText } = resolvePoolSummary(groupData || {});
     const memberMap = Object.fromEntries(members.map((m) => [m.id, m.name]));
-    let expenseRowsXML = '';
     let totalInMain = 0;
 
-    expenses.forEach((exp) => {
-      const { expCurr, amt, rateSnap, amtInMain } = resolveExpenseSnapshot(
-        exp,
-        mainC,
-        foreignC,
-        gRate
-      );
-      totalInMain += amtInMain;
+    const expRowsHtml = expenses
+      .map((exp) => {
+        const { expCurr, amt, rateSnap, amtInMain } = resolveExpenseSnapshot(exp, mainC, foreignC, gRate);
+        totalInMain += amtInMain;
+        const payerName = exp.paidByPool ? `公數池 (${expCurr})` : memberMap[exp.payerId] || exp.payerName || exp.payerId;
+        const splitNames = (exp.participants || []).map((id) => memberMap[id] || id).join('、');
+        const extraNotes = formatCustomExtras(exp.customExtras, memberMap, expCurr);
+        return `<tr>
+          <td>${escapeHTML(exp.date || formatDateStamp())}</td>
+          <td>${escapeHTML(exp.title || '未命名消費')}</td>
+          <td>${escapeHTML(payerName)}</td>
+          <td>${escapeHTML(expCurr)}</td>
+          <td style="mso-number-format:'0.00';text-align:right;">${amt.toFixed(2)}</td>
+          <td style="mso-number-format:'0.000000';text-align:right;">${formatRate(rateSnap)}</td>
+          <td style="mso-number-format:'0.00';text-align:right;font-weight:bold;">${amtInMain.toFixed(2)}</td>
+          <td>${escapeHTML(splitNames)}</td>
+          <td>${escapeHTML(extraNotes)}</td>
+        </tr>`;
+      })
+      .join('');
 
-      const payerName = exp.paidByPool
-        ? `公數池 (${expCurr})`
-        : memberMap[exp.payerId] || exp.payerName || exp.payerId;
-      const splitNames = (exp.participants || []).map((id) => memberMap[id] || id).join('、');
-      const extraNotes = formatCustomExtras(exp.customExtras, memberMap, expCurr);
+    const poolRowsHtml =
+      Array.isArray(poolTopups) && poolTopups.length > 0
+        ? poolTopups
+            .map((t) => {
+              const tCurr = t.currency || foreignC;
+              const tAmt = ensureNumber(t.amount, 0);
+              const tRate = tCurr === mainC ? 1 : ensureNumber(t.rateAtCreation, gRate);
+              const tMain = tAmt * tRate;
+              const contribLabel =
+                t.contributor === 'ALL' ? '全員平均夾錢' : `${memberMap[t.contributor] || t.contributor} 單獨出資`;
+              return `<tr>
+                <td>${escapeHTML(t.date || formatDateStamp())}</td>
+                <td>${escapeHTML(tCurr)}</td>
+                <td style="mso-number-format:'0.00';text-align:right;">${tAmt.toFixed(2)}</td>
+                <td style="mso-number-format:'0.000000';text-align:right;">${formatRate(tRate)}</td>
+                <td style="mso-number-format:'0.00';text-align:right;font-weight:bold;">${tMain.toFixed(2)}</td>
+                <td>${escapeHTML(contribLabel)}</td>
+                <td>${escapeHTML(t.note || '-')}</td>
+              </tr>`;
+            })
+            .join('')
+        : `<tr><td colspan="7" style="text-align:center;">尚無公數注資紀錄</td></tr>`;
 
-      expenseRowsXML += `
-        <Row>
-          <Cell><Data ss:Type="String">${escapeHTML(exp.date || formatDateStamp())}</Data></Cell>
-          <Cell><Data ss:Type="String">${escapeHTML(exp.title || '未命名消費')}</Data></Cell>
-          <Cell><Data ss:Type="String">${escapeHTML(payerName)}</Data></Cell>
-          <Cell><Data ss:Type="String">${escapeHTML(expCurr)}</Data></Cell>
-          <Cell><Data ss:Type="Number">${amt.toFixed(2)}</Data></Cell>
-          <Cell><Data ss:Type="Number">${formatRate(rateSnap)}</Data></Cell>
-          <Cell><Data ss:Type="Number">${amtInMain.toFixed(2)}</Data></Cell>
-          <Cell><Data ss:Type="String">${escapeHTML(splitNames)}</Data></Cell>
-          <Cell><Data ss:Type="String">${escapeHTML(extraNotes)}</Data></Cell>
-        </Row>`;
-    });
+    const settleRowsHtml =
+      settlements.length > 0
+        ? settlements
+            .map((s) => {
+              const fromName = memberMap[s.from] || s.fromName || s.from;
+              const toName = memberMap[s.to] || s.toName || s.to;
+              const amtMain = ensureNumber(s.amountHKD || s.amount, 0).toFixed(2);
+              const statusText =
+                s.status === 'confirmed' ? '✅ 已收妥破鎖' : s.status === 'pending_confirm' ? '⏳ 待債主確認' : '🔒 待找數';
+              return `<tr>
+                <td>${escapeHTML(fromName)}</td>
+                <td>${escapeHTML(toName)}</td>
+                <td style="mso-number-format:'0.00';text-align:right;font-weight:bold;color:#B91C1C;">${amtMain}</td>
+                <td>${escapeHTML(statusText)}</td>
+              </tr>`;
+            })
+            .join('')
+        : `<tr><td colspan="4" style="text-align:center;color:#059669;font-weight:bold;">🎉 全團帳目已結清！</td></tr>`;
 
-    let poolRowsXML = '';
-    if (Array.isArray(poolTopups) && poolTopups.length > 0) {
-      poolTopups.forEach((t) => {
-        const tCurr = t.currency || foreignC;
-        const tAmt = ensureNumber(t.amount, 0);
-        const tRate = tCurr === mainC ? 1 : ensureNumber(t.rateAtCreation, gRate);
-        const tMain = tAmt * tRate;
-        const contribLabel =
-          t.contributor === 'ALL'
-            ? '全員平均夾錢'
-            : `${memberMap[t.contributor] || t.contributor} 單獨出資`;
-        poolRowsXML += `
-          <Row>
-            <Cell><Data ss:Type="String">${escapeHTML(t.date || formatDateStamp())}</Data></Cell>
-            <Cell><Data ss:Type="String">${escapeHTML(tCurr)}</Data></Cell>
-            <Cell><Data ss:Type="Number">${tAmt.toFixed(2)}</Data></Cell>
-            <Cell><Data ss:Type="Number">${formatRate(tRate)}</Data></Cell>
-            <Cell><Data ss:Type="Number">${tMain.toFixed(2)}</Data></Cell>
-            <Cell><Data ss:Type="String">${escapeHTML(contribLabel)}</Data></Cell>
-            <Cell><Data ss:Type="String">${escapeHTML(t.note || '-')}</Data></Cell>
-          </Row>`;
-      });
-    } else {
-      poolRowsXML = `<Row><Cell><Data ss:Type="String">尚無公數注資紀錄</Data></Cell></Row>`;
-    }
+    const excelHtml = `\uFEFF<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+<head><meta charset="UTF-8"><title>${escapeHTML(name)} - 完團帳目表</title>
+<style>
+  body { font-family: -apple-system, "PingFang HK", "Microsoft JhengHei", sans-serif; padding: 16px; color: #1E293B; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 24px; font-size: 13px; }
+  th { background-color: #1E293B; color: #FFFFFF; font-weight: bold; padding: 8px; border: 1px solid #94A3B8; text-align: left; }
+  td { padding: 7px 8px; border: 1px solid #CBD5E1; }
+  .section-title { font-size: 15px; font-weight: bold; margin: 16px 0 8px; color: #0F172A; }
+  .total-row td { background-color: #FEF3C7; font-weight: bold; }
+</style></head>
+<body>
+  <h2>《混賬 Messy Split》完團帳目總表 — ${escapeHTML(name)}</h2>
+  <p style="font-size:12px;color:#475569;">匯出日期：${formatDateStamp()} ｜ 結算主貨幣：${escapeHTML(mainC)} ｜ 公數結餘：${escapeHTML(summaryText)}</p>
+  <div class="section-title">⚡ 一、最少步埋單結算行動表 (${escapeHTML(mainC)})</div>
+  <table>
+    <thead><tr><th>欠款人 (需付錢)</th><th>收款人 (債主)</th><th>應付主貨幣 (${escapeHTML(mainC)})</th><th>狀態</th></tr></thead>
+    <tbody>${settleRowsHtml}</tbody>
+  </table>
+  <div class="section-title">🧾 二、全團消費賬單明細</div>
+  <table>
+    <thead><tr><th>日期</th><th>項目名稱</th><th>墊支人/付款方式</th><th>原幣別</th><th>原幣金額</th><th>記帳匯率快照</th><th>折合主貨幣 (${escapeHTML(mainC)})</th><th>參與分攤團友</th><th>個人加項備註</th></tr></thead>
+    <tbody>
+      ${expRowsHtml}
+      <tr class="total-row"><td colspan="6">消費總計 (共 ${expenses.length} 筆)</td><td style="mso-number-format:'0.00';text-align:right;">${totalInMain.toFixed(2)}</td><td colspan="2"></td></tr>
+    </tbody>
+  </table>
+  <div class="section-title">💰 三、公數資金池注資明細</div>
+  <table>
+    <thead><tr><th>注資日期</th><th>注資幣別</th><th>注資金額</th><th>匯率快照</th><th>折合主貨幣 (${escapeHTML(mainC)})</th><th>出資方式 / 出資人</th><th>備註</th></tr></thead>
+    <tbody>${poolRowsHtml}</tbody>
+  </table>
+  <p style="font-size:11px;color:#64748B;">${escapeHTML(LEGAL_DISCLAIMER_TEXT)}<br>${escapeHTML(PRIVACY_NOTICE_TEXT)}</p>
+</body></html>`;
 
-    let settlementRowsXML = '';
-    settlements.forEach((s) => {
-      const fromName = memberMap[s.from] || s.fromName || s.from;
-      const toName = memberMap[s.to] || s.toName || s.to;
-      const amtMain = ensureNumber(s.amountHKD || s.amount, 0).toFixed(2);
-      const statusText =
-        s.status === 'confirmed'
-          ? '已收妥破鎖'
-          : s.status === 'pending_confirm'
-          ? '待債主確認'
-          : '待找數';
-      settlementRowsXML += `
-        <Row>
-          <Cell><Data ss:Type="String">${escapeHTML(fromName)}</Data></Cell>
-          <Cell><Data ss:Type="String">${escapeHTML(toName)}</Data></Cell>
-          <Cell><Data ss:Type="Number">${amtMain}</Data></Cell>
-          <Cell><Data ss:Type="String">${escapeHTML(statusText)}</Data></Cell>
-        </Row>`;
-    });
-
-    const workbookXML = `<?xml version="1.0" encoding="UTF-8"?>
-<?mso-application progid="Excel.Sheet"?>
-<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
- <Styles>
-  <Style ss:ID="Header"><Font ss:Bold="1" ss:Color="#FFFFFF"/><Interior ss:Color="#1E293B" ss:Pattern="Solid"/></Style>
-  <Style ss:ID="TotalRow"><Font ss:Bold="1" ss:Color="#0F172A"/><Interior ss:Color="#FEF3C7" ss:Pattern="Solid"/></Style>
-  <Style ss:ID="NoteRow"><Font ss:Size="9" ss:Color="#64748B"/></Style>
- </Styles>
- <Worksheet ss:Name="1_消費明細"><Table>
-   <Row ss:StyleID="Header">
-    <Cell><Data ss:Type="String">日期</Data></Cell>
-    <Cell><Data ss:Type="String">項目名稱</Data></Cell>
-    <Cell><Data ss:Type="String">墊支人/付款方式</Data></Cell>
-    <Cell><Data ss:Type="String">原幣別</Data></Cell>
-    <Cell><Data ss:Type="String">原幣金額</Data></Cell>
-    <Cell><Data ss:Type="String">記帳匯率快照</Data></Cell>
-    <Cell><Data ss:Type="String">折合主貨幣 (${escapeHTML(mainC)})</Data></Cell>
-    <Cell><Data ss:Type="String">參與分攤團友</Data></Cell>
-    <Cell><Data ss:Type="String">個人加項備註</Data></Cell>
-   </Row>
-   ${expenseRowsXML}
-   <Row ss:StyleID="TotalRow">
-    <Cell><Data ss:Type="String">總計 (${expenses.length} 筆)</Data></Cell><Cell><Data ss:Type="String"></Data></Cell><Cell><Data ss:Type="String"></Data></Cell><Cell><Data ss:Type="String"></Data></Cell><Cell><Data ss:Type="String"></Data></Cell><Cell><Data ss:Type="String">合共 (${escapeHTML(mainC)})</Data></Cell><Cell><Data ss:Type="Number">${totalInMain.toFixed(2)}</Data></Cell><Cell><Data ss:Type="String"></Data></Cell><Cell><Data ss:Type="String"></Data></Cell>
-   </Row>
-   <Row ss:StyleID="NoteRow"><Cell><Data ss:Type="String">${escapeHTML(LEGAL_DISCLAIMER_TEXT)}</Data></Cell></Row>
-   <Row ss:StyleID="NoteRow"><Cell><Data ss:Type="String">${escapeHTML(PRIVACY_NOTICE_TEXT)}</Data></Cell></Row>
-  </Table></Worksheet>
- <Worksheet ss:Name="2_公數注資明細"><Table>
-   <Row ss:StyleID="Header">
-    <Cell><Data ss:Type="String">注資日期</Data></Cell>
-    <Cell><Data ss:Type="String">注資幣別</Data></Cell>
-    <Cell><Data ss:Type="String">注資金額</Data></Cell>
-    <Cell><Data ss:Type="String">匯率快照</Data></Cell>
-    <Cell><Data ss:Type="String">折合主貨幣 (${escapeHTML(mainC)})</Data></Cell>
-    <Cell><Data ss:Type="String">出資方式 / 出資人</Data></Cell>
-    <Cell><Data ss:Type="String">備註</Data></Cell>
-   </Row>
-   ${poolRowsXML}
-  </Table></Worksheet>
- <Worksheet ss:Name="3_最少步埋單"><Table>
-   <Row ss:StyleID="Header"><Cell><Data ss:Type="String">欠款人 (需付錢)</Data></Cell><Cell><Data ss:Type="String">收款人 (債主)</Data></Cell><Cell><Data ss:Type="String">應付主貨幣 (${escapeHTML(mainC)})</Data></Cell><Cell><Data ss:Type="String">目前狀態</Data></Cell></Row>
-   ${settlementRowsXML}
-   <Row ss:StyleID="NoteRow"><Cell><Data ss:Type="String">${escapeHTML(LEGAL_DISCLAIMER_TEXT)}</Data></Cell></Row>
-   <Row ss:StyleID="NoteRow"><Cell><Data ss:Type="String">${escapeHTML(PRIVACY_NOTICE_TEXT)}</Data></Cell></Row>
-  </Table></Worksheet>
-</Workbook>`;
-
-    const blob = new Blob([workbookXML], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+    const blob = new Blob([excelHtml], { type: 'application/vnd.ms-excel;charset=utf-8;' });
     triggerBlobDownload(blob, `${sanitizeFileName(name)}_完團帳目表_${formatDateStamp()}.xls`);
   }
 
@@ -585,7 +559,35 @@ table{width:100%;border-collapse:collapse;margin-bottom:16px;font-size:11.5px}th
 </div>
 <script>setTimeout(()=>window.print(),350);</script></body></html>`;
 
-    const printWin = window.open('', '_blank', 'noopener');
+    // 使用隱藏 iframe 原地觸發系統列印 / 另存為 PDF（徹底根治電腦與手機彈出空白分頁問題）
+    const oldFrame = document.getElementById('messyPdfPrintFrame');
+    if (oldFrame) oldFrame.remove();
+
+    const iframe = document.createElement('iframe');
+    iframe.id = 'messyPdfPrintFrame';
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+    document.body.appendChild(iframe);
+
+    const frameDoc = iframe.contentWindow || iframe.contentDocument;
+    const doc = frameDoc.document || frameDoc;
+    doc.open();
+    doc.write(printHTML);
+    doc.close();
+
+    setTimeout(() => {
+      try {
+        iframe.contentWindow.focus();
+        iframe.contentWindow.print();
+      } catch (_) {
+        const blob = new Blob([printHTML], { type: 'text/html;charset=utf-8;' });
+        triggerBlobDownload(blob, `${sanitizeFileName(name)}_PDF結算單_${formatDateStamp()}.html`);
+      }
+    }, 300);
     if (printWin) {
       printWin.document.open();
       printWin.document.write(printHTML);
