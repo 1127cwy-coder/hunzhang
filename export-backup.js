@@ -1,10 +1,10 @@
 // ============================================================================
-// 《混賬》(Messy Split) v7.2 - 完團報表匯出與自動備份模組 (export-backup.js)
-// 審計強化內容：
-// 1. [效能] downloadFullBackupFile 改用 Blob 分塊串流組裝，消除單一巨型 JSON 字串造成的記憶體峰值 (OOM)
-// 2. [效能] 打包與還原單據迴圈加入 Event Loop 讓出機制 (yieldToMain)，防止多單據時凍結 UI
-// 3. [資安] 對齊 OWASP 600,000 次 PBKDF2 迭代標準，並保留 100,000 次舊版備份向下相容
-// 4. [法律] CSV / Excel / PDF 全面補齊「AS IS 算術與匯率免責條款」、「API 來源標示」與「PDPO 私隱提醒」
+// 《混賬》(Messy Split) v7.4 - 完團報表匯出與自動備份模組 (export-backup.js)
+// 強化內容：
+// 1. [匯出格式修復] 全面支援雙軌貨幣 (mainCurrency + 外幣)、每筆帳單獨立幣別與記帳當下匯率快照 (rateAtCreation)
+// 2. [韓元/歐元精度] 支援 EUR 與 KRW 高精度匯率顯示 (最高 6 位小數)，防止韓元折算誤差
+// 3. [公數明細匯出] CSV / Excel (三工作表) / PDF 全面納入「公數注資明細紀錄 (poolTopups)」與雙幣公數結餘
+// 4. [效能与資安] 分塊 Blob 串流備份防 OOM、Dirty-Flag 省電快照、CSV 防公式注入
 // ============================================================================
 
 const ExportBackup = (() => {
@@ -22,7 +22,6 @@ const ExportBackup = (() => {
   const MAX_BACKUP_SIZE = 100 * 1024 * 1024; // 100MB
   const SAFE_NAME_MAX = 80;
 
-  // 法律免責與私隱合規條款常數
   const LEGAL_DISCLAIMER_TEXT =
     '【免責聲明】本報表之匯率折算、OCR 單據辨識與最少步結算金額按「現況 (AS IS)」提供，僅供算術參考；團友於實際轉帳前應自行核對單據原圖與金額，開發者對任何直接或間接財務誤差概不負責。匯率資料來源：Rates by Exchange Rate API。';
   const PRIVACY_NOTICE_TEXT =
@@ -30,8 +29,6 @@ const ExportBackup = (() => {
 
   let autoBackupTimer = null;
   let onVisibilityChange = null;
-
-  // Dirty Flag 與上次儲存之狀態字串快取，避免每 60 秒重複無效寫入 IndexedDB
   let isStateDirty = false;
   let lastSavedStateJson = '';
 
@@ -44,7 +41,7 @@ const ExportBackup = (() => {
   }
 
   // ==========================================================================
-  // 基礎工具
+  // 基礎工具與高精度匯率格式化 (支援 KRW 6 位小數)
   // ==========================================================================
   function escapeHTML(str) {
     return String(str ?? '')
@@ -60,6 +57,12 @@ const ExportBackup = (() => {
     return Number.isFinite(n) ? n : fallback;
   }
 
+  function formatRate(rateVal) {
+    const n = ensureNumber(rateVal, 1);
+    if (n === 1) return '1';
+    return Number(n.toFixed(6)).toString();
+  }
+
   function sanitizeFileName(name) {
     const base = String(name || 'MessySplit')
       .replace(/[\\/:*?"<>|]/g, '_')
@@ -70,7 +73,6 @@ const ExportBackup = (() => {
 
   function escapeCSV(val) {
     let str = String(val ?? '').replace(/\r?\n/g, ' ');
-    // 防 CSV 公式注入：避免 Excel 將 = + - @ 開頭當作公式執行
     if (/^[=+\-@\t\r]/.test(str)) {
       str = "'" + str;
     }
@@ -88,6 +90,39 @@ const ExportBackup = (() => {
     return entries
       .map(([id, v]) => `${memberMap[id] || id}: ${prefix}${ensureNumber(v, 0)}`)
       .join('；');
+  }
+
+  function resolveExpenseSnapshot(exp, mainCurrency, foreignCurrency, defaultGroupRate) {
+    const expCurr = exp.currency || foreignCurrency;
+    const amt = ensureNumber(exp.amount, 0);
+    const rateSnap =
+      expCurr === mainCurrency
+        ? 1
+        : ensureNumber(exp.rateAtCreation, ensureNumber(defaultGroupRate, 1));
+    const amtInMain = amt * rateSnap;
+    return { expCurr, amt, rateSnap, amtInMain };
+  }
+
+  function resolvePoolSummary(groupData) {
+    const mainC = groupData.mainCurrency || 'HKD';
+    const foreignC =
+      groupData.currency && groupData.currency !== 'NONE' ? groupData.currency : mainC;
+    const gRate = ensureNumber(groupData.exchangeRate, 1);
+    const poolBalances =
+      groupData.poolBalances && typeof groupData.poolBalances === 'object'
+        ? groupData.poolBalances
+        : { [mainC]: 0, [foreignC]: ensureNumber(groupData.poolBalance, 0) };
+
+    const foreignBal = ensureNumber(poolBalances[foreignC], 0);
+    const mainBal = ensureNumber(poolBalances[mainC], 0);
+    const totalInMain = mainBal + (foreignC !== mainC ? foreignBal * gRate : 0);
+
+    const summaryText =
+      foreignC === mainC
+        ? `${mainC} ${mainBal.toFixed(2)}`
+        : `外幣 ${foreignC} ${foreignBal.toFixed(2)} ＋ 主幣 ${mainC} ${mainBal.toFixed(2)} (合共折合 ${mainC} ${totalInMain.toFixed(2)})`;
+
+    return { mainC, foreignC, gRate, foreignBal, mainBal, totalInMain, summaryText };
   }
 
   function triggerBlobDownload(blob, filename) {
@@ -118,82 +153,142 @@ const ExportBackup = (() => {
   }
 
   // ==========================================================================
-  // 1. 匯出 CSV (UTF-8 BOM + 公式注入防護 + 免責與私隱聲明)
+  // 1. 匯出 CSV (UTF-8 BOM + 雙幣匯率快照 + 公數注資明細 + 免責聲明)
   // ==========================================================================
   function exportToCSV(groupData) {
     const {
       name = '未命名群組',
-      currency = 'HKD',
-      exchangeRate = 1,
       members = [],
       expenses = [],
+      poolTopups = [],
       settlements = [],
-      poolBalance = 0,
       includePoolInSettlement = false
     } = groupData || {};
 
-    const rate = ensureNumber(exchangeRate, 1);
-    const poolBal = ensureNumber(poolBalance, 0);
+    const { mainC, foreignC, gRate, summaryText } = resolvePoolSummary(groupData || {});
     const memberMap = Object.fromEntries(members.map((m) => [m.id, m.name]));
     const rows = [];
 
     rows.push(['【混賬 Messy Split — 完團結算總表】']);
     rows.push(['群組名稱', name, '匯出日期', formatDateStamp()]);
-    rows.push(['主要貨幣', currency, '折算港幣匯率', rate]);
+    rows.push([
+      '結算主貨幣',
+      mainC,
+      '本團外幣與基準匯率',
+      foreignC === mainC ? '無外幣 (單幣模式)' : `1 ${foreignC} = ${formatRate(gRate)} ${mainC}`
+    ]);
     rows.push([
       '公數資金池結餘',
-      `${currency} ${poolBal.toFixed(2)} (約 HK$ ${(poolBal * rate).toFixed(2)})`,
+      summaryText,
       '公數餘額納入結算',
-      includePoolInSettlement ? '是（已按比例退還折抵）' : '否（獨立保留於公數池）'
+      includePoolInSettlement ? '是（已按出資比例退還折抵）' : '否（獨立保留於公數池）'
     ]);
     rows.push([]);
 
+    // 一、消費賬單明細
     rows.push(['【一、消費賬單明細】']);
     rows.push([
       '日期',
       '項目名稱',
       '墊支人/付款方式',
-      `原幣金額 (${currency})`,
-      '折合港幣 (HK$)',
+      '原幣別',
+      '原幣金額',
+      '記帳匯率快照',
+      `折合主貨幣 (${mainC})`,
       '參與分攤成員',
-      '多退少補/自訂加項備註',
+      '個人加項備註',
       '單據ID'
     ]);
 
-    let totalOriginal = 0;
-    let totalHKD = 0;
+    let totalInMain = 0;
 
     expenses.forEach((exp) => {
-      const amt = ensureNumber(exp.amount, 0);
-      const hkd = amt * rate;
-      totalOriginal += amt;
-      totalHKD += hkd;
+      const { expCurr, amt, rateSnap, amtInMain } = resolveExpenseSnapshot(
+        exp,
+        mainC,
+        foreignC,
+        gRate
+      );
+      totalInMain += amtInMain;
 
       const payerName = exp.paidByPool
-        ? '💰 公數資金池'
+        ? `💰 公數池 (${expCurr})`
         : memberMap[exp.payerId] || exp.payerName || exp.payerId;
       const splitNames = (exp.participants || []).map((id) => memberMap[id] || id).join('、');
-      const extraNotes = formatCustomExtras(exp.customExtras, memberMap, currency);
+      const extraNotes = formatCustomExtras(exp.customExtras, memberMap, expCurr);
 
       rows.push([
         exp.date || formatDateStamp(),
         exp.title || '未命名消費',
         payerName,
+        expCurr,
         amt.toFixed(2),
-        hkd.toFixed(2),
+        formatRate(rateSnap),
+        amtInMain.toFixed(2),
         splitNames,
         extraNotes,
         exp.receiptId || '無'
       ]);
     });
 
-    rows.push(['總計', `共 ${expenses.length} 筆`, '', totalOriginal.toFixed(2), totalHKD.toFixed(2), '', '', '']);
+    rows.push([
+      '消費總計',
+      `共 ${expenses.length} 筆`,
+      '',
+      '',
+      '',
+      `合共 (${mainC})`,
+      totalInMain.toFixed(2),
+      '',
+      '',
+      ''
+    ]);
     rows.push([]);
-    rows.push(['【二、最少步埋單結算行動表】']);
-    rows.push(['欠款人 (需付錢)', '收款人 (債主)', '應付金額 (HK$)', '還款狀態']);
+
+    // 二、公數注資明細紀錄
+    rows.push(['【二、公數注資明細紀錄】']);
+    rows.push([
+      '注資日期',
+      '注資幣別',
+      '注資金額',
+      '折算匯率快照',
+      `折合主貨幣 (${mainC})`,
+      '出資方式 / 出資人',
+      '備註'
+    ]);
+
+    if (!Array.isArray(poolTopups) || poolTopups.length === 0) {
+      rows.push(['尚無公數注資紀錄', '-', '0.00', '-', '0.00', '-', '-']);
+    } else {
+      poolTopups.forEach((t) => {
+        const tCurr = t.currency || foreignC;
+        const tAmt = ensureNumber(t.amount, 0);
+        const tRate =
+          tCurr === mainC ? 1 : ensureNumber(t.rateAtCreation, gRate);
+        const tMain = tAmt * tRate;
+        const contribLabel =
+          t.contributor === 'ALL'
+            ? '👥 全員平均夾錢'
+            : `👤 ${memberMap[t.contributor] || t.contributor} 單獨出資`;
+        rows.push([
+          t.date || formatDateStamp(),
+          tCurr,
+          tAmt.toFixed(2),
+          formatRate(tRate),
+          tMain.toFixed(2),
+          contribLabel,
+          t.note || '-'
+        ]);
+      });
+    }
+    rows.push([]);
+
+    // 三、最少步埋單結算行動表
+    rows.push(['【三、最少步埋單結算行動表】']);
+    rows.push(['欠款人 (需付錢)', '收款人 (債主)', `應付主貨幣 (${mainC})`, '還款狀態']);
 
     if (settlements.length === 0) {
-      rows.push(['🎉 全團帳目已結清，無須任何轉帳！', '', '', '已結清']);
+      rows.push(['🎉 全團帳目已結清，無須任何轉帳！', '', '0.00', '已結清']);
     } else {
       settlements.forEach((s) => {
         const fromName = memberMap[s.from] || s.fromName || s.from;
@@ -204,7 +299,12 @@ const ExportBackup = (() => {
             : s.status === 'pending_confirm'
             ? '⏳ 待債主確認'
             : '🔒 待找數';
-        rows.push([fromName, toName, ensureNumber(s.amountHKD || s.amount, 0).toFixed(2), statusText]);
+        rows.push([
+          fromName,
+          toName,
+          ensureNumber(s.amountHKD || s.amount, 0).toFixed(2),
+          statusText
+        ]);
       });
     }
 
@@ -218,50 +318,82 @@ const ExportBackup = (() => {
   }
 
   // ==========================================================================
-  // 2. 匯出 Excel (SpreadsheetML 雙分頁工作表，含自訂加項與法規聲明)
+  // 2. 匯出 Excel (SpreadsheetML 三分頁工作表：1_消費明細、2_公數注資明細、3_最少步埋單)
   // ==========================================================================
   function exportToExcel(groupData) {
     const {
       name = '未命名群組',
-      currency = 'HKD',
-      exchangeRate = 1,
       members = [],
       expenses = [],
+      poolTopups = [],
       settlements = []
     } = groupData || {};
 
-    const rate = ensureNumber(exchangeRate, 1);
+    const { mainC, foreignC, gRate } = resolvePoolSummary(groupData || {});
     const memberMap = Object.fromEntries(members.map((m) => [m.id, m.name]));
     let expenseRowsXML = '';
-    let totalHKD = 0;
+    let totalInMain = 0;
 
     expenses.forEach((exp) => {
-      const amt = ensureNumber(exp.amount, 0);
-      const hkd = amt * rate;
-      totalHKD += hkd;
+      const { expCurr, amt, rateSnap, amtInMain } = resolveExpenseSnapshot(
+        exp,
+        mainC,
+        foreignC,
+        gRate
+      );
+      totalInMain += amtInMain;
+
       const payerName = exp.paidByPool
-        ? '公數資金池'
+        ? `公數池 (${expCurr})`
         : memberMap[exp.payerId] || exp.payerName || exp.payerId;
       const splitNames = (exp.participants || []).map((id) => memberMap[id] || id).join('、');
-      const extraNotes = formatCustomExtras(exp.customExtras, memberMap, currency);
+      const extraNotes = formatCustomExtras(exp.customExtras, memberMap, expCurr);
 
       expenseRowsXML += `
         <Row>
           <Cell><Data ss:Type="String">${escapeHTML(exp.date || formatDateStamp())}</Data></Cell>
           <Cell><Data ss:Type="String">${escapeHTML(exp.title || '未命名消費')}</Data></Cell>
           <Cell><Data ss:Type="String">${escapeHTML(payerName)}</Data></Cell>
+          <Cell><Data ss:Type="String">${escapeHTML(expCurr)}</Data></Cell>
           <Cell><Data ss:Type="Number">${amt.toFixed(2)}</Data></Cell>
-          <Cell><Data ss:Type="Number">${hkd.toFixed(2)}</Data></Cell>
+          <Cell><Data ss:Type="Number">${formatRate(rateSnap)}</Data></Cell>
+          <Cell><Data ss:Type="Number">${amtInMain.toFixed(2)}</Data></Cell>
           <Cell><Data ss:Type="String">${escapeHTML(splitNames)}</Data></Cell>
           <Cell><Data ss:Type="String">${escapeHTML(extraNotes)}</Data></Cell>
         </Row>`;
     });
 
+    let poolRowsXML = '';
+    if (Array.isArray(poolTopups) && poolTopups.length > 0) {
+      poolTopups.forEach((t) => {
+        const tCurr = t.currency || foreignC;
+        const tAmt = ensureNumber(t.amount, 0);
+        const tRate = tCurr === mainC ? 1 : ensureNumber(t.rateAtCreation, gRate);
+        const tMain = tAmt * tRate;
+        const contribLabel =
+          t.contributor === 'ALL'
+            ? '全員平均夾錢'
+            : `${memberMap[t.contributor] || t.contributor} 單獨出資`;
+        poolRowsXML += `
+          <Row>
+            <Cell><Data ss:Type="String">${escapeHTML(t.date || formatDateStamp())}</Data></Cell>
+            <Cell><Data ss:Type="String">${escapeHTML(tCurr)}</Data></Cell>
+            <Cell><Data ss:Type="Number">${tAmt.toFixed(2)}</Data></Cell>
+            <Cell><Data ss:Type="Number">${formatRate(tRate)}</Data></Cell>
+            <Cell><Data ss:Type="Number">${tMain.toFixed(2)}</Data></Cell>
+            <Cell><Data ss:Type="String">${escapeHTML(contribLabel)}</Data></Cell>
+            <Cell><Data ss:Type="String">${escapeHTML(t.note || '-')}</Data></Cell>
+          </Row>`;
+      });
+    } else {
+      poolRowsXML = `<Row><Cell><Data ss:Type="String">尚無公數注資紀錄</Data></Cell></Row>`;
+    }
+
     let settlementRowsXML = '';
     settlements.forEach((s) => {
       const fromName = memberMap[s.from] || s.fromName || s.from;
       const toName = memberMap[s.to] || s.toName || s.to;
-      const amtHKD = ensureNumber(s.amountHKD || s.amount, 0).toFixed(2);
+      const amtMain = ensureNumber(s.amountHKD || s.amount, 0).toFixed(2);
       const statusText =
         s.status === 'confirmed'
           ? '已收妥破鎖'
@@ -272,7 +404,7 @@ const ExportBackup = (() => {
         <Row>
           <Cell><Data ss:Type="String">${escapeHTML(fromName)}</Data></Cell>
           <Cell><Data ss:Type="String">${escapeHTML(toName)}</Data></Cell>
-          <Cell><Data ss:Type="Number">${amtHKD}</Data></Cell>
+          <Cell><Data ss:Type="Number">${amtMain}</Data></Cell>
           <Cell><Data ss:Type="String">${escapeHTML(statusText)}</Data></Cell>
         </Row>`;
     });
@@ -289,21 +421,35 @@ const ExportBackup = (() => {
    <Row ss:StyleID="Header">
     <Cell><Data ss:Type="String">日期</Data></Cell>
     <Cell><Data ss:Type="String">項目名稱</Data></Cell>
-    <Cell><Data ss:Type="String">墊支人</Data></Cell>
-    <Cell><Data ss:Type="String">原幣金額 (${escapeHTML(currency)})</Data></Cell>
-    <Cell><Data ss:Type="String">折合港幣 (HK$)</Data></Cell>
+    <Cell><Data ss:Type="String">墊支人/付款方式</Data></Cell>
+    <Cell><Data ss:Type="String">原幣別</Data></Cell>
+    <Cell><Data ss:Type="String">原幣金額</Data></Cell>
+    <Cell><Data ss:Type="String">記帳匯率快照</Data></Cell>
+    <Cell><Data ss:Type="String">折合主貨幣 (${escapeHTML(mainC)})</Data></Cell>
     <Cell><Data ss:Type="String">參與分攤團友</Data></Cell>
-    <Cell><Data ss:Type="String">自訂加項/不平均分攤備註</Data></Cell>
+    <Cell><Data ss:Type="String">個人加項備註</Data></Cell>
    </Row>
    ${expenseRowsXML}
    <Row ss:StyleID="TotalRow">
-    <Cell><Data ss:Type="String">總計 (${expenses.length} 筆)</Data></Cell><Cell><Data ss:Type="String"></Data></Cell><Cell><Data ss:Type="String"></Data></Cell><Cell><Data ss:Type="String"></Data></Cell><Cell><Data ss:Type="Number">${totalHKD.toFixed(2)}</Data></Cell><Cell><Data ss:Type="String"></Data></Cell><Cell><Data ss:Type="String"></Data></Cell>
+    <Cell><Data ss:Type="String">總計 (${expenses.length} 筆)</Data></Cell><Cell><Data ss:Type="String"></Data></Cell><Cell><Data ss:Type="String"></Data></Cell><Cell><Data ss:Type="String"></Data></Cell><Cell><Data ss:Type="String"></Data></Cell><Cell><Data ss:Type="String">合共 (${escapeHTML(mainC)})</Data></Cell><Cell><Data ss:Type="Number">${totalInMain.toFixed(2)}</Data></Cell><Cell><Data ss:Type="String"></Data></Cell><Cell><Data ss:Type="String"></Data></Cell>
    </Row>
    <Row ss:StyleID="NoteRow"><Cell><Data ss:Type="String">${escapeHTML(LEGAL_DISCLAIMER_TEXT)}</Data></Cell></Row>
    <Row ss:StyleID="NoteRow"><Cell><Data ss:Type="String">${escapeHTML(PRIVACY_NOTICE_TEXT)}</Data></Cell></Row>
   </Table></Worksheet>
- <Worksheet ss:Name="2_最少步埋單"><Table>
-   <Row ss:StyleID="Header"><Cell><Data ss:Type="String">欠款人 (需付錢)</Data></Cell><Cell><Data ss:Type="String">收款人 (債主)</Data></Cell><Cell><Data ss:Type="String">應付港幣 (HK$)</Data></Cell><Cell><Data ss:Type="String">目前狀態</Data></Cell></Row>
+ <Worksheet ss:Name="2_公數注資明細"><Table>
+   <Row ss:StyleID="Header">
+    <Cell><Data ss:Type="String">注資日期</Data></Cell>
+    <Cell><Data ss:Type="String">注資幣別</Data></Cell>
+    <Cell><Data ss:Type="String">注資金額</Data></Cell>
+    <Cell><Data ss:Type="String">匯率快照</Data></Cell>
+    <Cell><Data ss:Type="String">折合主貨幣 (${escapeHTML(mainC)})</Data></Cell>
+    <Cell><Data ss:Type="String">出資方式 / 出資人</Data></Cell>
+    <Cell><Data ss:Type="String">備註</Data></Cell>
+   </Row>
+   ${poolRowsXML}
+  </Table></Worksheet>
+ <Worksheet ss:Name="3_最少步埋單"><Table>
+   <Row ss:StyleID="Header"><Cell><Data ss:Type="String">欠款人 (需付錢)</Data></Cell><Cell><Data ss:Type="String">收款人 (債主)</Data></Cell><Cell><Data ss:Type="String">應付主貨幣 (${escapeHTML(mainC)})</Data></Cell><Cell><Data ss:Type="String">目前狀態</Data></Cell></Row>
    ${settlementRowsXML}
    <Row ss:StyleID="NoteRow"><Cell><Data ss:Type="String">${escapeHTML(LEGAL_DISCLAIMER_TEXT)}</Data></Cell></Row>
    <Row ss:StyleID="NoteRow"><Cell><Data ss:Type="String">${escapeHTML(PRIVACY_NOTICE_TEXT)}</Data></Cell></Row>
@@ -315,23 +461,77 @@ const ExportBackup = (() => {
   }
 
   // ==========================================================================
-  // 3. 匯出 PDF (A4 可列印 HTML 報告書，含免責條款、API 歸屬與私隱提醒)
+  // 3. 匯出 PDF (A4 可列印 HTML 報告書，完整呈現雙幣快照與公數注資明細)
   // ==========================================================================
   function exportToPDF(groupData) {
     const {
       name = '未命名群組',
-      currency = 'HKD',
-      exchangeRate = 1,
       members = [],
       expenses = [],
+      poolTopups = [],
       settlements = [],
-      poolBalance = 0,
       includePoolInSettlement = false
     } = groupData || {};
 
-    const rate = ensureNumber(exchangeRate, 1);
+    const { mainC, foreignC, gRate, summaryText } = resolvePoolSummary(groupData || {});
     const memberMap = Object.fromEntries(members.map((m) => [m.id, m.name]));
-    const totalHKD = expenses.reduce((sum, e) => sum + ensureNumber(e.amount, 0) * rate, 0);
+    let totalInMain = 0;
+
+    const expenseRowsHTML = expenses
+      .map((e) => {
+        const { expCurr, amt, rateSnap, amtInMain } = resolveExpenseSnapshot(
+          e,
+          mainC,
+          foreignC,
+          gRate
+        );
+        totalInMain += amtInMain;
+
+        const payer = escapeHTML(
+          e.paidByPool ? `💰 公數池 (${expCurr})` : memberMap[e.payerId] || e.payerName || e.payerId
+        );
+        const splitNames = escapeHTML(
+          (e.participants || []).map((id) => memberMap[id] || id).join('、')
+        );
+        const extraStr = formatCustomExtras(e.customExtras, memberMap, expCurr);
+        const extraBadge =
+          extraStr !== '-'
+            ? `<div style="font-size:10px;color:#B45309;margin-top:2px;">➕ 自訂加項：${escapeHTML(extraStr)}</div>`
+            : '';
+
+        return `<tr>
+          <td>${escapeHTML(e.date || formatDateStamp())}</td>
+          <td><strong>${escapeHTML(e.title || '未命名')}</strong>${extraBadge}</td>
+          <td>${payer}</td>
+          <td style="text-align:right;">${escapeHTML(expCurr)} ${amt.toFixed(2)}<div style="font-size:9px;color:#64748B;">匯率: ${formatRate(rateSnap)}</div></td>
+          <td style="text-align:right;font-weight:700;">${escapeHTML(mainC)} ${amtInMain.toFixed(2)}</td>
+          <td style="font-size:11px;color:#475569;">${splitNames}</td>
+        </tr>`;
+      })
+      .join('');
+
+    const poolRowsHTML =
+      !Array.isArray(poolTopups) || poolTopups.length === 0
+        ? `<tr><td colspan="5" style="text-align:center;color:#64748B;padding:10px;">尚無公數注資紀錄</td></tr>`
+        : poolTopups
+            .map((t) => {
+              const tCurr = t.currency || foreignC;
+              const tAmt = ensureNumber(t.amount, 0);
+              const tRate = tCurr === mainC ? 1 : ensureNumber(t.rateAtCreation, gRate);
+              const tMain = tAmt * tRate;
+              const contribLabel =
+                t.contributor === 'ALL'
+                  ? '👥 全員平均夾錢'
+                  : `👤 ${memberMap[t.contributor] || t.contributor} 單獨出資`;
+              return `<tr>
+                <td>${escapeHTML(t.date || formatDateStamp())}</td>
+                <td>${escapeHTML(contribLabel)}</td>
+                <td style="text-align:right;">${escapeHTML(tCurr)} ${tAmt.toFixed(2)}</td>
+                <td style="text-align:right;">${formatRate(tRate)}</td>
+                <td style="text-align:right;font-weight:700;">${escapeHTML(mainC)} ${tMain.toFixed(2)}</td>
+              </tr>`;
+            })
+            .join('');
 
     const settlementRowsHTML =
       settlements.length === 0
@@ -347,31 +547,15 @@ const ExportBackup = (() => {
                   : s.status === 'pending_confirm'
                   ? '<span class="badge wait">⏳ 待確認</span>'
                   : '<span class="badge due">🔒 待找數</span>';
-              return `<tr><td><strong>${fromName}</strong></td><td>➔ <strong>${toName}</strong></td><td style="text-align:right;font-weight:700;color:#B91C1C;">HK$ ${amt}</td><td style="text-align:center;">${badge}</td></tr>`;
+              return `<tr><td><strong>${fromName}</strong></td><td>➔ <strong>${toName}</strong></td><td style="text-align:right;font-weight:700;color:#B91C1C;">${escapeHTML(mainC)} ${amt}</td><td style="text-align:center;">${badge}</td></tr>`;
             })
             .join('');
 
-    const expenseRowsHTML = expenses
-      .map((e) => {
-        const amt = ensureNumber(e.amount, 0);
-        const hkd = amt * rate;
-        const payer = escapeHTML(
-          e.paidByPool ? '💰 公數池' : memberMap[e.payerId] || e.payerName || e.payerId
-        );
-        const splitNames = escapeHTML(
-          (e.participants || []).map((id) => memberMap[id] || id).join('、')
-        );
-        const extraStr = formatCustomExtras(e.customExtras, memberMap, currency);
-        const extraBadge =
-          extraStr !== '-'
-            ? `<div style="font-size:10px;color:#B45309;margin-top:2px;">➕ 自訂加項：${escapeHTML(extraStr)}</div>`
-            : '';
-
-        return `<tr><td>${escapeHTML(e.date || formatDateStamp())}</td><td><strong>${escapeHTML(e.title || '未命名')}</strong>${extraBadge}</td><td>${payer}</td><td style="text-align:right;">${escapeHTML(currency)} ${amt.toFixed(2)}</td><td style="text-align:right;font-weight:600;">HK$ ${hkd.toFixed(2)}</td><td style="font-size:11px;color:#475569;">${splitNames}</td></tr>`;
-      })
-      .join('');
-
     const poolNote = includePoolInSettlement ? '（已納入結算退還）' : '（未納入結算）';
+    const rateHeaderDesc =
+      foreignC === mainC
+        ? `單一主貨幣 (${escapeHTML(mainC)})`
+        : `主幣 ${escapeHTML(mainC)} ｜ 外幣 1 ${escapeHTML(foreignC)} = ${escapeHTML(formatRate(gRate))} ${escapeHTML(mainC)}`;
 
     const printHTML = `<!DOCTYPE html>
 <html lang="zh-HK"><head><meta charset="UTF-8"><title>${escapeHTML(name)} - 混賬完團結算單</title>
@@ -381,18 +565,19 @@ const ExportBackup = (() => {
 .brand{font-size:24px;font-weight:900}.sub{font-size:12px;color:#64748B;margin-top:4px}
 .summary-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px}
 .card{background:#F8FAFC;border:1px solid #E2E8F0;border-radius:10px;padding:12px 16px}
-.card-label{font-size:11px;color:#64748B;font-weight:600}.card-val{font-size:20px;font-weight:800;color:#0F172A;margin-top:4px}
-h2{font-size:15px;background:#1E293B;color:#FFF;padding:8px 12px;border-radius:6px;margin:20px 0 10px}
-table{width:100%;border-collapse:collapse;margin-bottom:18px;font-size:12px}th,td{border:1px solid #CBD5E1;padding:8px 10px;text-align:left}th{background:#F1F5F9;font-weight:700}
-.badge{padding:3px 8px;border-radius:99px;font-size:11px;font-weight:700}.badge.ok{background:#D1FAE5;color:#065F46}.badge.wait{background:#FEF3C7;color:#92400E}.badge.due{background:#FEE2E2;color:#991B1B}
-.footer{margin-top:28px;font-size:10px;color:#64748B;line-height:1.6;border-top:1px dashed #CBD5E1;padding-top:10px}
+.card-label{font-size:11px;color:#64748B;font-weight:600}.card-val{font-size:16px;font-weight:800;color:#0F172A;margin-top:4px}
+h2{font-size:14px;background:#1E293B;color:#FFF;padding:7px 12px;border-radius:6px;margin:18px 0 8px}
+table{width:100%;border-collapse:collapse;margin-bottom:16px;font-size:11.5px}th,td{border:1px solid #CBD5E1;padding:7px 9px;text-align:left}th{background:#F1F5F9;font-weight:700}
+.badge{padding:3px 8px;border-radius:99px;font-size:10px;font-weight:700}.badge.ok{background:#D1FAE5;color:#065F46}.badge.wait{background:#FEF3C7;color:#92400E}.badge.due{background:#FEE2E2;color:#991B1B}
+.footer{margin-top:24px;font-size:10px;color:#64748B;line-height:1.6;border-top:1px dashed #CBD5E1;padding-top:10px}
 @media print{.no-print{display:none!important}}
 </style></head><body>
 <div class="no-print" style="margin-bottom:16px;text-align:right;"><button onclick="window.print()" style="background:#1E293B;color:#FFF;border:none;padding:10px 18px;border-radius:8px;font-weight:bold;cursor:pointer;">🖨️ 列印 / 另存為 PDF</button></div>
-<div class="header"><div><div class="brand">混賬 Messy Split — 完團結算報告書</div><div class="sub">群組名稱：${escapeHTML(name)} ｜ 結算匯率：1 ${escapeHTML(currency)} = ${escapeHTML(String(rate))} HKD</div></div><div style="text-align:right;font-size:12px;color:#475569;"><div>匯出日期：${formatDateStamp()}</div><div>參與團友：${members.length} 人</div></div></div>
-<div class="summary-grid"><div class="card"><div class="card-label">全團總開支 (折合港幣)</div><div class="card-val">HK$ ${totalHKD.toFixed(2)}</div></div><div class="card"><div class="card-label">總消費筆數</div><div class="card-val">${expenses.length} 筆</div></div><div class="card"><div class="card-label">公數池結餘 ${poolNote}</div><div class="card-val">${escapeHTML(currency)} ${ensureNumber(poolBalance, 0).toFixed(2)}</div></div></div>
-<h2>⚡ 一、最少步埋單結算行動表</h2><table><thead><tr><th>欠款人 (需付錢)</th><th>收款人 (債主)</th><th style="text-align:right;">應付金額 (HK$)</th><th style="text-align:center;">狀態</th></tr></thead><tbody>${settlementRowsHTML}</tbody></table>
-<h2>🧾 二、全團消費賬單明細</h2><table><thead><tr><th>日期</th><th>項目（含自訂加項）</th><th>墊支人</th><th style="text-align:right;">原幣金額</th><th style="text-align:right;">折合港幣</th><th>分攤團友</th></tr></thead><tbody>${expenseRowsHTML}</tbody></table>
+<div class="header"><div><div class="brand">混賬 Messy Split — 完團結算報告書</div><div class="sub">群組名稱：${escapeHTML(name)} ｜ 幣別設定：${rateHeaderDesc}</div></div><div style="text-align:right;font-size:12px;color:#475569;"><div>匯出日期：${formatDateStamp()}</div><div>參與團友：${members.length} 人</div></div></div>
+<div class="summary-grid"><div class="card"><div class="card-label">全團總開支 (折合 ${escapeHTML(mainC)})</div><div class="card-val">${escapeHTML(mainC)} ${totalInMain.toFixed(2)}</div></div><div class="card"><div class="card-label">消費與注資筆數</div><div class="card-val">消費 ${expenses.length} 筆 / 注資 ${(poolTopups || []).length} 筆</div></div><div class="card"><div class="card-label">公數池結餘 ${poolNote}</div><div class="card-val" style="font-size:13px;">${escapeHTML(summaryText)}</div></div></div>
+<h2>⚡ 一、最少步埋單結算行動表 (以主貨幣 ${escapeHTML(mainC)} 結算)</h2><table><thead><tr><th>欠款人 (需付錢)</th><th>收款人 (債主)</th><th style="text-align:right;">應付金額 (${escapeHTML(mainC)})</th><th style="text-align:center;">狀態</th></tr></thead><tbody>${settlementRowsHTML}</tbody></table>
+<h2>💰 二、公數資金池注資明細紀錄</h2><table><thead><tr><th>注資日期</th><th>出資方式 / 出資人</th><th style="text-align:right;">原幣注資額</th><th style="text-align:right;">匯率快照</th><th style="text-align:right;">折合主貨幣 (${escapeHTML(mainC)})</th></tr></thead><tbody>${poolRowsHTML}</tbody></table>
+<h2>🧾 三、全團消費賬單明細</h2><table><thead><tr><th>日期</th><th>項目（含自訂加項）</th><th>墊支人/來源</th><th style="text-align:right;">原幣金額 (匯率快照)</th><th style="text-align:right;">折合 ${escapeHTML(mainC)}</th><th>分攤團友</th></tr></thead><tbody>${expenseRowsHTML}</tbody></table>
 <div class="footer">
   <div>● <strong>合規聲明：</strong>本報表由《混賬》(Messy Split) 自動生成。所有帳目與公數紀錄僅供團友間日常分攤算術核對，不涉及資金代收、託管或香港法例第 584 章儲值支付工具（SVF）服務。</div>
   <div>● ${escapeHTML(LEGAL_DISCLAIMER_TEXT)}</div>
@@ -412,7 +597,7 @@ table{width:100%;border-collapse:collapse;margin-bottom:18px;font-size:12px}th,t
   }
 
   // ==========================================================================
-  // 4. IndexedDB 連線與自動備份引擎 (含 Dirty Flag 省電保護)
+  // 4. IndexedDB 連線與自動備份引擎 (Dirty Flag 省電保護)
   // ==========================================================================
   function openDB() {
     if (typeof DBCrypto !== 'undefined' && typeof DBCrypto.openDB === 'function') {
@@ -438,28 +623,18 @@ table{width:100%;border-collapse:collapse;margin-bottom:18px;font-size:12px}th,t
       };
       req.onsuccess = (e) => resolve(e.target.result);
       req.onerror = (e) => reject(e.target.error);
-      req.onblocked = () => console.warn('[ExportBackup] DB upgrade blocked');
     });
   }
 
   async function saveAutoSnapshot(getStateCallback, force = true) {
     try {
-      let currentState;
-      if (typeof getStateCallback === 'function') {
-        try {
-          currentState = getStateCallback();
-        } catch (err) {
-          console.warn('[ExportBackup] getState 回調異常', err);
-          return false;
-        }
-      } else {
-        currentState = getStateCallback;
-      }
+      let currentState =
+        typeof getStateCallback === 'function' ? getStateCallback() : getStateCallback;
       if (!currentState) return false;
 
       const currentJson = JSON.stringify(currentState);
       if (!force && !isStateDirty && currentJson === lastSavedStateJson) {
-        return false; // 狀態無任何變更，略過 IndexedDB 磁碟寫入以省電
+        return false;
       }
 
       const db = await openDB();
@@ -511,7 +686,6 @@ table{width:100%;border-collapse:collapse;margin-bottom:18px;font-size:12px}th,t
       document.removeEventListener('visibilitychange', onVisibilityChange);
       onVisibilityChange = null;
     }
-    console.log('[ExportBackup] ⏹️ 自動備份引擎已停止');
   }
 
   function startAutoBackupEngine(getStateCallback, intervalMs = 60000) {
@@ -526,11 +700,10 @@ table{width:100%;border-collapse:collapse;margin-bottom:18px;font-size:12px}th,t
       }
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
-    console.log(`[ExportBackup] ✅ 自動備份引擎已啟動 (每 ${safeInterval / 1000}s Dirty-Check + 離場保護)`);
   }
 
   // ==========================================================================
-  // 5. 完整備份分塊打包與非阻塞還原 (防 OOM 崩潰 + 600,000 次 PBKDF2 對齊)
+  // 5. 完整備份分塊打包與非阻塞還原
   // ==========================================================================
   function blobToPortableObject(blob) {
     return new Promise((resolve, reject) => {
@@ -542,26 +715,19 @@ table{width:100%;border-collapse:collapse;margin-bottom:18px;font-size:12px}th,t
   }
 
   function dataUrlToBlob(dataUrl) {
-    try {
-      const commaIdx = dataUrl.indexOf(',');
-      if (commaIdx === -1) throw new Error('無效的 DataURL 格式');
-      const meta = dataUrl.slice(0, commaIdx);
-      const base64 = dataUrl.slice(commaIdx + 1);
-      const mimeMatch = meta.match(/:(.*?);/);
-      const mime = mimeMatch ? mimeMatch[1] : 'application/octet-stream';
-      const binary = atob(base64);
-      const len = binary.length;
-      const bytes = new Uint8Array(len);
-      for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
-      return new Blob([bytes], { type: mime });
-    } catch (e) {
-      throw new Error('dataUrl 轉 Blob 失敗: ' + e.message);
-    }
+    const commaIdx = dataUrl.indexOf(',');
+    if (commaIdx === -1) throw new Error('無效的 DataURL 格式');
+    const meta = dataUrl.slice(0, commaIdx);
+    const base64 = dataUrl.slice(commaIdx + 1);
+    const mimeMatch = meta.match(/:(.*?);/);
+    const mime = mimeMatch ? mimeMatch[1] : 'application/octet-stream';
+    const binary = atob(base64);
+    const len = binary.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+    return new Blob([bytes], { type: mime });
   }
 
-  /**
-   * 採用分塊 BlobParts 組裝 JSON，避免在記憶體內拼接單一數十 MB 的巨型字串導致手機瀏覽器 OOM 崩潰
-   */
   async function downloadFullBackupFile(currentState, includeMediaBlobs = true) {
     const db = await openDB();
 
@@ -596,13 +762,12 @@ table{width:100%;border-collapse:collapse;margin-bottom:18px;font-size:12px}th,t
     const blobParts = [];
     const headerMeta = {
       app: 'MessySplit',
-      version: '7.2',
+      version: '7.4',
       exportedAt: new Date().toISOString(),
       state: currentState,
       encryptedVault: serializableVault
     };
 
-    // 移除結尾的 '}'，改以分塊方式串接 mediaVault 陣列
     const headerJson = JSON.stringify(headerMeta);
     blobParts.push(headerJson.slice(0, -1));
     blobParts.push(',"mediaVault":[');
@@ -628,7 +793,6 @@ table{width:100%;border-collapse:collapse;margin-bottom:18px;font-size:12px}th,t
           blobParts.push(JSON.stringify(itemObj));
           exportedMediaCount++;
 
-          // 每處理 5 張單據讓出主執行緒，保持 UI 流暢
           if (exportedMediaCount % 5 === 0) {
             await yieldToMain();
           }
@@ -641,10 +805,6 @@ table{width:100%;border-collapse:collapse;margin-bottom:18px;font-size:12px}th,t
     blobParts.push(`],"mediaCount":${exportedMediaCount}}`);
 
     const finalBlob = new Blob(blobParts, { type: 'application/json;charset=utf-8;' });
-    if (finalBlob.size > MAX_BACKUP_SIZE) {
-      console.warn('[ExportBackup] 備份檔已超過 100MB，還原時可能受限於裝置記憶體');
-    }
-
     triggerBlobDownload(finalBlob, `混賬完整備份_${formatDateStamp()}.messybackup.json`);
   }
 
@@ -656,32 +816,15 @@ table{width:100%;border-collapse:collapse;margin-bottom:18px;font-size:12px}th,t
       );
     }
 
-    let text;
-    try {
-      text = await backupFile.text();
-    } catch {
-      throw new Error('讀取備份檔案失敗');
-    }
-
-    let bundle;
-    try {
-      bundle = JSON.parse(text);
-    } catch {
-      throw new Error('備份檔案不是有效的 JSON');
-    }
+    const text = await backupFile.text();
+    const bundle = JSON.parse(text);
 
     if (!bundle || bundle.app !== 'MessySplit') {
       throw new Error('無效的《混賬》備份檔案格式');
     }
 
-    const allowedVersions = ['7.0', '7.1', '7.2', '7'];
-    if (bundle.version && !allowedVersions.includes(String(bundle.version))) {
-      console.warn(`[ExportBackup] 備份版本 ${bundle.version} 與目前 7.2 可能不完全相容，仍嘗試還原`);
-    }
-
     const db = await openDB();
 
-    // 1. 還原狀態與 AES-GCM 加密金庫 (向下相容舊版 100,000 次與新版 600,000 次 iterations)
     await new Promise((resolve, reject) => {
       const tx = db.transaction([STATE_STORE], 'readwrite');
       const store = tx.objectStore(STATE_STORE);
@@ -707,7 +850,6 @@ table{width:100%;border-collapse:collapse;margin-bottom:18px;font-size:12px}th,t
       tx.onerror = (e) => reject(e.target.error);
     });
 
-    // 2. 非阻塞還原 media_vault_store 原生 Blob 單據與加密 QR Code
     let restoredMediaCount = 0;
     if (Array.isArray(bundle.mediaVault) && bundle.mediaVault.length > 0) {
       for (let i = 0; i < bundle.mediaVault.length; i++) {

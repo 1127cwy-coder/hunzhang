@@ -1,5 +1,5 @@
 # ============================================================================
-# 《混賬》(Messy Split) v7.2 - 生產環境 HTTP 快取與資安加固標頭 (_headers)
+# 《混賬》(Messy Split) v7.4 - 生產環境 HTTP 快取與資安加固標頭 (_headers)
 # 適用於 Cloudflare Pages / Netlify 等靜態託管平台
 # ============================================================================
 
@@ -46,4 +46,4 @@
   Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
   Permissions-Policy: camera=(self), microphone=(), geolocation=(), payment=(), usb=()
   Cross-Origin-Opener-Policy: same-origin-allow-popups
-  Content-Security-Policy: default-src 'self' https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://open.er-api.com; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob: https://cdn.tailwindcss.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; img-src 'self' data: blob:; connect-src 'self' data: blob: https://open.er-api.com https://cdn.jsdelivr.net https://tessdata.projectnaptha.com; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self';
+  Content-Security-Policy: default-src 'self' https://cdn.jsdelivr.net https://open.er-api.com; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob: https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' data: blob: https://open.er-api.com https://cdn.jsdelivr.net https://tessdata.projectnaptha.com; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self';

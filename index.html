@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>混賬 Messy Split v7.3 — 夾錢同行 PWA 正式版 (雙幣+快轉+防崩版)</title>
+  <title>混賬 Messy Split v7.4 — 夾錢同行 PWA 正式版</title>
 
   <!-- PWA 設定與桌面圖示 -->
   <link rel="manifest" href="./manifest.json">
@@ -399,9 +399,77 @@
     .hover\:text-slate-700:hover { color: #334155; }
     .hover\:text-orange-600:hover { color: #ea580c; }
     .hover\:text-rose-600:hover { color: #e11d48; }
+
+    .whitespace-nowrap { white-space: nowrap; }
+    .max-w-\[140px\] { max-width: 140px; }
+    .max-w-\[64px\] { max-width: 64px; }
+
+    /* [任務 3C] 向右拉動顯示編輯與刪除抽屜 */
+    .swipe-item-wrap {
+      position: relative;
+      overflow: hidden;
+      border-radius: 1rem;
+    }
+    .swipe-actions-left {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 132px;
+      display: flex;
+      align-items: stretch;
+      z-index: 1;
+      border-radius: 1rem 0 0 1rem;
+      overflow: hidden;
+    }
+    .swipe-actions-left.single-action {
+      width: 72px;
+    }
+    .swipe-content-card {
+      position: relative;
+      z-index: 2;
+      transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+      touch-action: pan-y;
+      border-left: 4px solid #FDBA74;
+    }
+    .swipe-item-wrap.swiped-right .swipe-content-card {
+      transform: translateX(132px);
+    }
+    .swipe-item-wrap.swiped-right.single-swipe .swipe-content-card {
+      transform: translateX(72px);
+    }
+
+    /* [目標 1] 鎖死不能橫屏：當偵測到行動裝置橫向握持時顯示全屏鎖定遮罩 */
+    #landscapeLockOverlay {
+      display: none;
+    }
+    @media screen and (max-width: 932px) and (max-height: 520px) and (orientation: landscape) {
+      #landscapeLockOverlay {
+        position: fixed;
+        inset: 0;
+        background-color: #0F172A;
+        color: #FCD34D;
+        z-index: 99999;
+        display: flex !important;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        text-align: center;
+      }
+      #appShell {
+        display: none !important;
+      }
+    }
   </style>
 </head>
 <body>
+  <!-- [目標 1] 手機橫向鎖定遮罩 -->
+  <div id="landscapeLockOverlay" role="alert" aria-live="assertive">
+    <div class="text-3xl mb-2">🔄📱</div>
+    <div class="font-black text-base text-amber-300">請將手機轉回直向模式</div>
+    <p class="text-xs text-slate-300 mt-1">《混賬》已鎖定直向顯示，以確保雙幣記帳與單據掃描版面最佳體驗</p>
+  </div>
 
   <!-- ==================== 手機主容器 (#appShell) ==================== -->
   <div id="appShell">
@@ -415,7 +483,7 @@
         <div>
           <div class="flex items-center gap-1.5">
             <span class="font-black text-base tracking-wide">混賬</span>
-            <span class="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-400/40 px-1.5 py-0.5 rounded-full font-bold">v7.3 雙幣版</span>
+            <span class="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-400/40 px-1.5 py-0.5 rounded-full font-bold">v7.4 正式版</span>
           </div>
           <div id="storagePersistBadge" class="text-[10px] text-slate-300 flex items-center gap-1">
             <span>🛡️ 本地加密金庫就緒</span>
@@ -424,23 +492,42 @@
       </div>
 
       <div class="flex items-center gap-1.5">
-        <button id="pwaInstallBtn" onclick="triggerPWAInstall()" class="hidden text-xs bg-amber-500 hover:bg-amber-600 text-slate-950 font-black px-2.5 py-1.5 rounded-lg shadow">
-          📲 安裝App
+        <button id="pwaInstallHeaderBtn" onclick="handleInstallPwaClick()" aria-label="加到主畫面變成App" class="hidden text-xs bg-emerald-600 hover:bg-emerald-500 text-white px-2.5 py-1.5 rounded-lg font-black shadow-sm flex items-center gap-1 shrink-0 whitespace-nowrap">
+          <span>📲 變身App</span>
         </button>
-        <button onclick="switchTab('legal')" aria-label="查看香港法規與私隱聲明" class="text-xs bg-slate-700 hover:bg-slate-600 px-2.5 py-1.5 rounded-lg font-bold">
-          ⚖️ 法規與私隱
+        <button onclick="openGroupSyncModal()" aria-label="同團帳目藍牙與連結同步" class="text-xs bg-orange-600 hover:bg-orange-700 text-white px-2.5 py-1.5 rounded-lg font-black shadow-sm flex items-center gap-1 shrink-0 whitespace-nowrap">
+          <span>🔄 同團同步</span>
+        </button>
+        <button onclick="switchTab('legal')" aria-label="查看香港法規與私隱聲明" class="text-xs bg-slate-700 hover:bg-slate-600 px-2 py-1.5 rounded-lg font-bold shrink-0 whitespace-nowrap">
+          ⚖️ 法規
         </button>
       </div>
     </header>
 
+    <!-- [新增] 半自動未同步變動提醒條 (記帳/改公數/破鎖後自動浮現) -->
+    <div id="unsyncedChangesBanner" class="hidden bg-slate-900 text-amber-300 px-4 py-2 text-xs font-bold flex items-center justify-between border-b border-slate-700">
+      <span class="truncate pr-2">✨ 帳目有新變動，順手傳給同團好友？</span>
+      <div class="flex items-center gap-1.5 shrink-0">
+        <button onclick="triggerQuickShareSync()" class="bg-orange-600 hover:bg-orange-700 text-white font-black text-[11px] px-2.5 py-1 rounded-lg shadow">
+          📲 藍牙/WhatsApp 快傳
+        </button>
+        <button onclick="openGroupSyncModal()" class="bg-slate-700 hover:bg-slate-600 text-white font-bold text-[11px] px-2 py-1 rounded-lg">
+          📷 QR
+        </button>
+      </div>
+    </div>
+
     <!-- 2. 當前群組標題列與團友荊棘頭像列 -->
     <section class="bg-gradient-to-b from-amber-50/90 to-[#FAF6F0] px-4 pt-3 pb-2 border-b border-amber-200/70">
       <div class="flex items-center justify-between mb-2">
-        <div class="flex items-center gap-1.5">
-          <span class="text-xs font-bold text-orange-800 bg-orange-100 px-2 py-0.5 rounded-md">當前群組</span>
-          <h1 id="currentGroupTitle" class="font-black text-base text-slate-800 truncate max-w-[175px]">東京賞楓美食團 🍁</h1>
+        <div class="flex items-center gap-1.5 min-w-0">
+          <span class="text-xs font-bold text-orange-800 bg-orange-100 px-2 py-0.5 rounded-md shrink-0">當前群組</span>
+          <h1 id="currentGroupTitle" class="font-black text-base text-slate-800 truncate max-w-[140px]">東京賞楓美食團 🍁</h1>
+          <button onclick="openEditCurrentGroupModal()" title="修改群組名稱、貨幣與角色數量" class="text-[11px] bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 font-black px-2 py-0.5 rounded-lg shrink-0 whitespace-nowrap">
+            ⚙️ 改團
+          </button>
           <button onclick="showHelpTip('群組與荊棘鎖鏈機制', '頭像外框代表即時結算狀態：\n🌿 綠框：已結清無欠款\n⏳ 黃虛線：已付款待債主確認\n🥀 紅刺鎖鏈：尚有欠款待找數（點無App團友頭像可綁定邀請碼認領帳目，點自己頭像可換動物外觀）。')"
-                  aria-label="群組與荊棘鎖鏈機制說明" class="text-xs text-slate-400 hover:text-slate-700 font-bold px-1">ⓘ</button>
+                  aria-label="群組與荊棘鎖鏈機制說明" class="text-xs text-slate-400 hover:text-slate-700 font-bold px-1 shrink-0">ⓘ</button>
         </div>
         <div class="text-right flex flex-col items-end">
           <button onclick="manualRefreshDailyRates()" title="點擊查看或更新當日匯率"
@@ -475,9 +562,14 @@
               <div id="poolBalanceHKDDisplay" class="text-[11px] text-amber-100 mt-0.5">合共折合主貨幣：HKD 780.00</div>
             </div>
             <div class="flex flex-col gap-1.5 items-end shrink-0">
-              <button onclick="openPoolTopupModal()" class="bg-white text-orange-700 hover:bg-amber-50 font-black text-xs px-3 py-1.5 rounded-xl shadow-sm">
-                ＋ 注資公數
-              </button>
+              <div class="flex items-center gap-1">
+                <button onclick="openPoolHistoryModal()" class="bg-amber-100 text-amber-950 hover:bg-white font-black text-[11px] px-2.5 py-1.5 rounded-xl shadow-sm">
+                  📋 明細/修改
+                </button>
+                <button onclick="openPoolTopupModal()" class="bg-white text-orange-700 hover:bg-amber-50 font-black text-xs px-3 py-1.5 rounded-xl shadow-sm">
+                  ＋ 注資公數
+                </button>
+              </div>
               <button onclick="openAddExpenseModal()" class="bg-slate-900/90 hover:bg-slate-900 text-amber-300 font-black text-xs px-3 py-1.5 rounded-xl shadow-sm">
                 📷 掃描/記一筆
               </button>
@@ -487,11 +579,14 @@
 
         <!-- 快捷操作列 -->
         <div class="flex items-center justify-between">
-          <div class="flex items-center gap-1.5">
-            <h2 class="font-black text-sm text-slate-800">🧾 消費賬單明細</h2>
-            <span id="expenseCountBadge" class="text-[11px] bg-slate-200 text-slate-700 font-bold px-2 py-0.5 rounded-full">0 筆</span>
+          <div>
+            <div class="flex items-center gap-1.5">
+              <h2 class="font-black text-sm text-slate-800">🧾 消費賬單明細</h2>
+              <span id="expenseCountBadge" class="text-[11px] bg-slate-200 text-slate-700 font-bold px-2 py-0.5 rounded-full">0 筆</span>
+            </div>
+            <div class="text-[10px] text-slate-400 font-semibold mt-0.5">💡 向右拉動單筆紀錄可顯示「編輯 / 刪除」</div>
           </div>
-          <button onclick="openAddExpenseModal()" class="bg-orange-600 hover:bg-orange-700 text-white font-black text-xs px-3.5 py-2 rounded-xl shadow flex items-center gap-1">
+          <button onclick="openAddExpenseModal()" class="bg-orange-600 hover:bg-orange-700 text-white font-black text-xs px-3.5 py-2 rounded-xl shadow flex items-center gap-1 shrink-0 whitespace-nowrap">
             <span>＋ 新增消費 / 本地 OCR</span>
           </button>
         </div>
@@ -625,8 +720,8 @@
         <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80 space-y-3">
           <div class="flex items-center justify-between">
             <h2 class="font-black text-base text-slate-800">🔔 過數破鎖與入團通知中心</h2>
-            <button onclick="simulateFriendPayment()" class="text-[11px] bg-amber-100 hover:bg-amber-200 text-amber-900 font-bold px-2.5 py-1 rounded-lg">
-              ⚡ 模擬團友過數給我
+            <button onclick="clearAllNotifications()" class="text-[11px] bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold px-2.5 py-1 rounded-lg">
+              🗑️ 一鍵清空通知
             </button>
           </div>
           <div id="notificationListContainer" class="space-y-2.5"></div>
@@ -636,19 +731,21 @@
       <!-- ==================== [分頁 E] ⚙️ 設定：主貨幣 + 換裝 + AES-GCM 金庫 + 備份 (Tab: settings) ==================== -->
       <div id="tab-settings" class="hidden space-y-4">
 
-        <!-- 0. [v7.3 新增] 全域結算主貨幣設定 -->
+        <!-- 0. [目標 6 & 9] 新建群組預設結算主貨幣設定 (加入 EUR / KRW，且僅套用於新建群組) -->
         <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80 space-y-2">
-          <div class="flex items-center justify-between">
+          <div class="flex items-center justify-between gap-2">
             <div>
-              <h2 class="font-black text-sm text-slate-800">🌐 全域預設結算主貨幣</h2>
-              <p class="text-[11px] text-slate-500">開團時預設存在，所有外幣消費最終以此主貨幣埋單結算</p>
+              <h2 class="font-black text-sm text-slate-800">🌐 新建群組預設結算主貨幣</h2>
+              <p class="text-[11px] text-slate-500">僅套用於日後「＋ 開新團」，絕不改動現有或過去群組的歷史紀錄</p>
             </div>
             <select id="globalMainCurrencySelect" onchange="saveGlobalMainCurrency(this.value)"
-                    class="px-3 py-1.5 text-xs font-black border border-slate-300 rounded-xl bg-amber-50 text-amber-950">
+                    class="px-3 py-1.5 text-xs font-black border border-slate-300 rounded-xl bg-amber-50 text-amber-950 shrink-0">
               <option value="HKD">HKD 港幣 (HK$)</option>
               <option value="TWD">TWD 台幣 (NT$)</option>
               <option value="USD">USD 美金 ($)</option>
               <option value="JPY">JPY 日圓 (¥)</option>
+              <option value="EUR">EUR 歐元 (€)</option>
+              <option value="KRW">KRW 韓元 (₩)</option>
             </select>
           </div>
         </div>
@@ -673,35 +770,35 @@
 
         <!-- 2. [v7.3 強化] AES-GCM (256-bit) 加密收款金庫（無預設假資料 + 首次強制雙重密碼設定） -->
         <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80 space-y-3">
-          <div class="flex items-center justify-between">
-            <div>
+          <div class="flex items-center justify-between gap-3">
+            <div class="min-w-0 flex-1">
               <h2 class="font-black text-sm text-slate-800 flex items-center gap-1">
                 <span>🔐 AES-GCM 個人收款金庫</span>
                 <button onclick="showHelpTip('PBKDF2 (600,000次) + AES-GCM 256-bit', '你的 FPS、PayMe、銀行戶口與收款 QR Code 會透過你自訂的金庫密碼衍生 256-bit 金鑰加密後存入 IndexedDB，絕不明文落地！首次使用須設定並確認新密碼。')"
                         aria-label="加密收款金庫說明" class="text-xs text-slate-400 font-bold">ⓘ</button>
               </h2>
-              <p id="vaultSubtitleHint" class="text-[11px] text-slate-500">首次使用請先設定專屬金庫密碼以啟用加密保護</p>
+              <p id="vaultSubtitleHint" class="text-[11px] text-slate-500 mt-0.5 leading-relaxed">首次使用請先設定專屬金庫密碼以啟用加密保護</p>
             </div>
-            <span id="vaultLockBadge" class="text-[11px] bg-rose-100 text-rose-800 font-bold px-2.5 py-1 rounded-full">🔒 未解鎖</span>
+            <span id="vaultLockBadge" class="text-xs bg-rose-100 text-rose-800 font-black px-3.5 py-1.5 rounded-full shrink-0 whitespace-nowrap shadow-sm">🔒 未解鎖</span>
           </div>
 
-          <!-- (A) 首次啟用金庫：強制設定新密碼與重複輸入確認 -->
-          <div id="vaultFirstTimeSetupBox" class="hidden bg-amber-50/90 p-3 rounded-xl border border-amber-200 space-y-2">
-            <div class="text-xs font-black text-amber-950">🛡️ 首次啟用金庫 — 請設定並確認你的金庫密碼：</div>
-            <input id="vaultInitPwd1" type="password" placeholder="輸入新金庫密碼 (至少 4 位，建議 8 位英數混合)"
+          <!-- (A) [目標 7] 首次啟用金庫：強制設定 8 位以上英數混合 + 最少 1 個英文大楷 -->
+          <div id="vaultFirstTimeSetupBox" class="hidden bg-amber-50/90 p-3.5 rounded-xl border border-amber-200 space-y-2.5">
+            <div class="text-xs font-black text-amber-950 leading-relaxed">🛡️ 首次啟用金庫 — 請設定 8 位以上英數混合密碼（須含最少 1 個英文大楷 A-Z）：</div>
+            <input id="vaultInitPwd1" type="password" placeholder="輸入新密碼 (如 Abcd1234)"
                    class="w-full px-3 py-2 text-xs border border-amber-300 rounded-xl bg-white">
             <input id="vaultInitPwd2" type="password" placeholder="再次輸入新金庫密碼以確認"
                    class="w-full px-3 py-2 text-xs border border-amber-300 rounded-xl bg-white">
-            <button onclick="handleSetupNewVaultPassword()" class="w-full bg-orange-600 hover:bg-orange-700 text-white font-black text-xs py-2 rounded-xl shadow">
-              🔐 設定密碼並開啟空白金庫
+            <button onclick="handleSetupNewVaultPassword()" class="w-full bg-orange-600 hover:bg-orange-700 text-white font-black text-xs py-2.5 px-4 rounded-xl shadow whitespace-nowrap">
+              🔐 設定強密碼並開啟空白金庫
             </button>
           </div>
 
           <!-- (B) 已建立金庫：單一密碼解鎖列 -->
-          <div id="vaultUnlockBox" class="flex gap-2">
+          <div id="vaultUnlockBox" class="flex gap-2 items-center">
             <input id="vaultPasswordInput" type="password" placeholder="輸入你設定的金庫密碼"
-                   class="flex-1 px-3 py-2 text-sm border border-slate-300 rounded-xl">
-            <button onclick="handleUnlockVault()" class="bg-orange-600 hover:bg-orange-700 text-white font-black text-xs px-4 py-2 rounded-xl">
+                   class="flex-1 min-w-0 px-3 py-2 text-sm border border-slate-300 rounded-xl">
+            <button onclick="handleUnlockVault()" class="bg-orange-600 hover:bg-orange-700 text-white font-black text-xs px-5 py-2.5 rounded-xl shadow shrink-0 whitespace-nowrap">
               🔓 解鎖金庫
             </button>
           </div>
@@ -830,6 +927,8 @@
             </button>
           </div>
         </div>
+
+
       </div>
 
       <!-- ==================== [分頁 F] ⚖️ 香港法規、免責條款與開源授權聲明 (Tab: legal) ==================== -->
@@ -846,6 +945,7 @@
             <li><strong>香港《支付系統及儲值支付工具條例》（第 584 章）合規：</strong>「公數資金池」僅為數字記帳欄位，實際款項由團友自行保管或透過外部銀行／PayMe／FPS 點對點轉帳。</li>
             <li><strong>《個人資料（私隱）條例》（第 486 章 PDPO）保障：</strong>個人收款戶口與 QR Code 採用 Web Crypto API (PBKDF2 600,000 次迭代 + AES-GCM 256-bit) 本地加密儲存於用戶裝置之 IndexedDB，邀請碼與 FPS 快轉 QR Code 皆為 100% 純前端本地運算。</li>
             <li><strong>算術、匯率與 OCR 辨識之免責條款（Limitation of Liability）：</strong>本程式提供之跨日匯率折算、動態 FPS QR Code、OCR 單據自動辨識結果與最少步結算金額均按「現況（AS IS）」提供，僅供社交分攤參考。用戶於實際執行銀行或電子轉帳前，應自行核對單據原圖、收款人姓名與最終金額；開發者對因使用或依賴本程式所產生之任何直接或間接財務損失概不負責。</li>
+            <li><strong>外部公開資源連線與零上雲私隱聲明：</strong>本程式於更新當日匯率或首次載入離線光學字元辨識（OCR）語言訓練包時，瀏覽器會直接向公開之匯率 API（<code>open.er-api.com</code>）及開源 CDN（<code>cdn.jsdelivr.net</code> / <code>tessdata.projectnaptha.com</code>）發起標準 HTTPS 讀取請求；上述第三方基礎設施可能會依標準網路協定記錄連線 IP，但本程式絕不會將任何收據圖像、帳目或個人資料上傳至任何外部伺服器。</li>
             <li><strong>第三方資料來源與開源授權聲明（Attributions）：</strong>
               <div class="mt-1 text-[11px] text-slate-500 space-y-0.5">
                 <div>1. 匯率參考資料：<a href="https://www.exchangerate-api.com" target="_blank" rel="noopener noreferrer" class="underline">Rates By Exchange Rate API</a></div>
@@ -980,11 +1080,11 @@
     </div>
   </div>
 
-  <!-- [彈窗 2] 🏕️ 開新團（主貨幣預設鎖定 ＋ 可選 1 種外幣） -->
+  <!-- [彈窗 2] 🏕️ 開新團 ／ ⚙️ 修改群組設定（支援修改貨幣、匯率與增減角色數量） -->
   <div id="createGroupModal" role="dialog" aria-modal="true" class="modal-backdrop hidden">
     <div class="bg-white w-full max-w-sm rounded-2xl p-4 shadow-2xl space-y-3 max-h-[90vh] overflow-y-auto">
       <div class="flex items-center justify-between border-b pb-2">
-        <h3 class="font-black text-base text-slate-900">🏕️ 開立新旅行／聚會群組</h3>
+        <h3 id="createGroupModalTitle" class="font-black text-base text-slate-900">🏕️ 開立新旅行／聚會群組</h3>
         <button onclick="closeModal('createGroupModal')" aria-label="關閉視窗" class="text-slate-400 hover:text-slate-700 font-black">✕</button>
       </div>
 
@@ -995,9 +1095,17 @@
                  class="w-full mt-0.5 px-3 py-1.5 text-sm border border-slate-300 rounded-xl font-bold">
         </div>
 
-        <div class="bg-amber-50/80 p-2.5 rounded-xl border border-amber-200 flex items-center justify-between text-xs">
-          <span class="font-bold text-amber-950">🌐 本團最終結算主貨幣（預設存在）：</span>
-          <span id="newGroupMainCurrBadge" class="font-black text-orange-700 bg-white px-2.5 py-0.5 rounded-lg border border-amber-300">HKD</span>
+        <div class="bg-amber-50/80 p-2.5 rounded-xl border border-amber-200 flex items-center justify-between text-xs gap-2">
+          <span class="font-bold text-amber-950">🌐 本團最終結算主貨幣：</span>
+          <select id="newGroupMainCurrSelect" onchange="autoFillExchangeRate(document.getElementById('newGroupCurrencySelect').value)"
+                  class="font-black text-orange-700 bg-white px-2.5 py-1 rounded-lg border border-amber-300 text-xs shrink-0">
+            <option value="HKD">HKD 港幣</option>
+            <option value="TWD">TWD 台幣</option>
+            <option value="USD">USD 美金</option>
+            <option value="JPY">JPY 日圓</option>
+            <option value="EUR">EUR 歐元</option>
+            <option value="KRW">KRW 韓元</option>
+          </select>
         </div>
 
         <div class="grid grid-cols-2 gap-2">
@@ -1006,6 +1114,8 @@
             <select id="newGroupCurrencySelect" onchange="autoFillExchangeRate(this.value)"
                     class="w-full mt-0.5 px-3 py-1.5 text-sm border border-slate-300 rounded-xl font-bold bg-white">
               <option value="JPY">JPY 日圓 (¥)</option>
+              <option value="KRW">KRW 韓元 (₩)</option>
+              <option value="EUR">EUR 歐元 (€)</option>
               <option value="TWD">TWD 台幣 (NT$)</option>
               <option value="USD">USD 美金 ($)</option>
               <option value="HKD">HKD 港幣 (HK$)</option>
@@ -1014,7 +1124,7 @@
           </div>
           <div>
             <label class="text-[11px] font-bold text-slate-600">1 外幣兌主貨幣匯率</label>
-            <input id="newGroupRateInput" type="number" step="0.0001" value="0.052"
+            <input id="newGroupRateInput" type="number" step="0.000001" value="0.052"
                    class="w-full mt-0.5 px-3 py-1.5 text-sm border border-slate-300 rounded-xl font-bold">
           </div>
         </div>
@@ -1025,42 +1135,45 @@
         <div id="swipeFrequentFriendsBar" class="flex items-center gap-2.5 overflow-x-auto no-scrollbar py-1"></div>
       </div>
 
+      <!-- [任務 4] 已消除右上角多餘的「＋ 增加無App成員格」按鈕，直接由下方灰色圓圈自動增生 -->
       <div class="bg-amber-50/70 p-3 rounded-xl border border-amber-200 space-y-2">
         <div class="flex items-center justify-between">
-          <span class="text-xs font-black text-amber-950">2. 本團預備成員席</span>
-          <button onclick="addGreyPlaceholderSlot()" class="text-[11px] bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold px-2 py-0.5 rounded-lg">
-            ＋ 增加無App成員格
-          </button>
+          <span class="text-xs font-black text-amber-950">2. 本團成員席（點頭像可改名或移除，點灰圈新增）</span>
         </div>
-        <p class="text-[11px] text-slate-500">點擊灰色虛線「＋」圓框即可設定無 App 朋友的名稱與動物樣貌（日後可綁定邀請碼認領帳目）：</p>
         <div id="stagedGroupMembersGrid" class="flex flex-wrap gap-3 pt-1"></div>
       </div>
 
-      <button onclick="confirmCreateNewGroup()" class="w-full bg-slate-900 hover:bg-slate-800 text-amber-300 font-black text-sm py-3 rounded-xl shadow-lg">
+      <button id="confirmCreateGroupBtn" onclick="confirmCreateNewGroup()" class="w-full bg-slate-900 hover:bg-slate-800 text-amber-300 font-black text-sm py-3 rounded-xl shadow-lg">
         🚀 確定建立群組（統一發送入團通知）
       </button>
     </div>
   </div>
 
-  <!-- [彈窗 3] 👤 設定無 App 成員 -->
+  <!-- [彈窗 3] 👤 設定或修改團友（預設填入動物名，點擊直接全選名字） -->
   <div id="configPlaceholderModal" role="dialog" aria-modal="true" class="modal-backdrop hidden">
     <div class="bg-white w-full max-w-xs rounded-2xl p-4 shadow-2xl space-y-3">
       <div class="flex items-center justify-between border-b pb-2">
-        <h3 class="font-black text-sm text-slate-900">🐾 設定無 App 團友名稱與樣貌</h3>
+        <h3 class="font-black text-sm text-slate-900">🐾 設定團友名稱與動物樣貌</h3>
         <button onclick="closeModal('configPlaceholderModal')" aria-label="關閉視窗" class="text-slate-400 font-black">✕</button>
       </div>
       <div>
-        <label class="text-[11px] font-bold text-slate-600">團友暱稱</label>
-        <input id="placeholderNameInput" type="text" placeholder="例如：表姐、阿傑"
-               class="w-full mt-0.5 px-3 py-1.5 text-sm border border-slate-300 rounded-xl font-bold">
+        <label class="text-[11px] font-bold text-slate-600">團友暱稱（點擊輸入框自動全選文字）</label>
+        <input id="placeholderNameInput" type="text" placeholder="例如：破殼小雞"
+               onfocus="setTimeout(() => this.select(), 10)" onclick="this.select()"
+               class="w-full mt-0.5 px-3 py-1.5 text-sm border border-slate-300 rounded-xl font-bold focus:border-orange-500 focus:outline-none">
       </div>
       <div>
-        <div class="text-[11px] font-bold text-slate-600 mb-1">選擇代表他的稀有動物：</div>
+        <div class="text-[11px] font-bold text-slate-600 mb-1">選擇代表他的稀有動物（預設帶入動物名）：</div>
         <div id="placeholderAnimalGrid" class="grid grid-cols-4 gap-2"></div>
       </div>
-      <button onclick="savePlaceholderMemberConfig()" class="w-full bg-orange-600 hover:bg-orange-700 text-white font-black text-xs py-2.5 rounded-xl">
-        ✅ 確認設定此團友
-      </button>
+      <div class="flex gap-2">
+        <button onclick="savePlaceholderMemberConfig()" class="flex-1 bg-orange-600 hover:bg-orange-700 text-white font-black text-xs py-2.5 rounded-xl shadow">
+          ✅ 確認設定
+        </button>
+        <button id="removeStagedMemberBtn" onclick="removeStagedMemberSlot()" class="hidden bg-rose-100 hover:bg-rose-200 text-rose-700 font-black text-xs px-3 py-2.5 rounded-xl">
+          🗑️ 移除
+        </button>
+      </div>
     </div>
   </div>
 
@@ -1115,29 +1228,61 @@
     </div>
   </div>
 
-  <!-- [彈窗 6] 💰 公數池注資彈窗（支援選擇外幣或主貨幣注資） -->
+  <!-- [彈窗 6] 💰 公數池注資 / 修改單筆注資彈窗 -->
   <div id="poolTopupModal" role="dialog" aria-modal="true" class="modal-backdrop hidden">
     <div class="bg-white w-full max-w-xs rounded-2xl p-4 shadow-2xl space-y-3">
       <div class="flex items-center justify-between border-b pb-2">
-        <h3 class="font-black text-sm text-slate-900">💰 注資公數資金池</h3>
+        <h3 id="poolTopupModalTitle" class="font-black text-sm text-slate-900">💰 注資公數資金池</h3>
         <button onclick="closeModal('poolTopupModal')" aria-label="關閉視窗" class="text-slate-400 font-black">✕</button>
       </div>
       <div class="flex items-center justify-between bg-slate-50 p-2 rounded-xl border border-slate-200">
         <span class="text-[11px] font-bold text-slate-600">選擇注資幣別：</span>
         <div id="poolTopupCurrencyPillBox" class="inline-flex rounded-lg bg-slate-200 p-0.5"></div>
       </div>
-      <div>
-        <label class="text-[11px] font-bold text-slate-600">注資總額 (<span id="poolModalCurrency">JPY</span>)</label>
-        <input id="poolTopupAmountInput" type="number" value="5000"
-               class="w-full mt-0.5 px-3 py-1.5 text-sm border border-slate-300 rounded-xl font-black">
+      <div class="grid grid-cols-2 gap-2">
+        <div>
+          <label class="text-[11px] font-bold text-slate-600">注資金額 (<span id="poolModalCurrency">JPY</span>)</label>
+          <input id="poolTopupAmountInput" type="number" step="0.01" placeholder="例如：5000"
+                 class="w-full mt-0.5 px-3 py-1.5 text-sm border border-slate-300 rounded-xl font-black">
+        </div>
+        <div>
+          <label class="text-[11px] font-bold text-slate-600">注資日期</label>
+          <input id="poolTopupDateInput" type="date"
+                 class="w-full mt-0.5 px-2.5 py-1.5 text-xs border border-slate-300 rounded-xl">
+        </div>
       </div>
       <div>
         <label class="text-[11px] font-bold text-slate-600">出資方式（供完團退還公數結餘計算）</label>
         <select id="poolContributorSelect" class="w-full mt-0.5 px-2.5 py-1.5 text-xs font-bold border border-slate-300 rounded-xl bg-white"></select>
       </div>
-      <button onclick="confirmPoolTopup()" class="w-full bg-orange-600 hover:bg-orange-700 text-white font-black text-xs py-2.5 rounded-xl">
-        ✅ 確認注資公數
+      <div>
+        <label class="text-[11px] font-bold text-slate-600">備註 (選填)</label>
+        <input id="poolTopupNoteInput" type="text" placeholder="例如：第一天機場夾錢"
+               class="w-full mt-0.5 px-3 py-1.5 text-xs border border-slate-300 rounded-xl">
+      </div>
+      <button id="poolTopupSubmitBtn" onclick="confirmPoolTopup()" class="w-full bg-orange-600 hover:bg-orange-700 text-white font-black text-xs py-2.5 rounded-xl">
+        ✅ 確認儲存公數注資
       </button>
+    </div>
+  </div>
+
+  <!-- [彈窗 6B] 📋 公數資金池注資明細與獨立修改視窗 -->
+  <div id="poolHistoryModal" role="dialog" aria-modal="true" class="modal-backdrop hidden">
+    <div class="bg-white w-full max-w-sm rounded-2xl p-4 shadow-2xl space-y-3 max-h-[90vh] overflow-y-auto">
+      <div class="flex items-center justify-between border-b pb-2">
+        <h3 class="font-black text-base text-slate-900">📋 公數注資明細與獨立修改</h3>
+        <button onclick="closeModal('poolHistoryModal')" aria-label="關閉視窗" class="text-slate-400 font-black">✕</button>
+      </div>
+      <div id="poolHistorySummaryBanner" class="bg-amber-50 border border-amber-200 rounded-xl p-2.5 text-xs font-bold text-amber-950"></div>
+      <div id="poolHistoryListContainer" class="space-y-2"></div>
+      <div class="flex gap-2 pt-1">
+        <button onclick="closeModal('poolHistoryModal'); openPoolTopupModal();" class="flex-1 bg-orange-600 hover:bg-orange-700 text-white font-black text-xs py-2.5 rounded-xl shadow">
+          ＋ 新增一筆公數注資
+        </button>
+        <button onclick="closeModal('poolHistoryModal')" class="bg-slate-200 text-slate-700 font-bold text-xs px-4 rounded-xl">
+          關閉
+        </button>
+      </div>
     </div>
   </div>
 
@@ -1188,6 +1333,62 @@
     </div>
   </div>
 
+  <!-- [彈窗 10] 🔄 同團帳目藍牙 AirDrop / #sync= 零留痕增量同步中心 -->
+  <div id="groupSyncModal" role="dialog" aria-modal="true" aria-labelledby="groupSyncModalTitle" class="modal-backdrop hidden">
+    <div class="bg-white w-full max-w-sm rounded-2xl p-4 shadow-2xl space-y-3 max-h-[90vh] overflow-y-auto">
+      <div class="flex items-center justify-between border-b pb-2">
+        <h3 id="groupSyncModalTitle" class="font-black text-base text-slate-900">🔄 同團帳目免伺服器同步</h3>
+        <button onclick="closeModal('groupSyncModal')" aria-label="關閉視窗" class="text-slate-400 hover:text-slate-700 font-black">✕</button>
+      </div>
+
+      <div class="p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-950 leading-relaxed">
+        🛡️ <strong>零留痕增量合併 (#sync=)：</strong>帳目封包置於網址 <code>#</code> 錨點內，<strong>絕不發送至任何伺服器</strong>。團友收到藍牙 AirDrop 或點擊 WhatsApp 連結後，會自動合併新帳單與公數，不會覆蓋彼此已記的帳！
+      </div>
+
+      <!-- 目標 5 連動：順便附上本人 FPS 號碼供團友一鍵生成含金額轉數快 QR -->
+      <div class="bg-slate-50 p-2.5 rounded-xl border border-slate-200 space-y-1.5">
+        <label class="flex items-center gap-2 text-xs font-black text-slate-800 cursor-pointer">
+          <input id="syncIncludeMyFpsChk" type="checkbox" checked class="accent-orange-600 w-4 h-4" onchange="refreshGroupSyncModalPayload()">
+          <span>⚡ 順便附上我的 FPS 號碼（方便團友埋單免輸入找數）</span>
+        </label>
+        <input id="syncMyFpsQuickInput" type="text" placeholder="選填：你的 FPS 電話或識別碼 (如 91234567)"
+               oninput="refreshGroupSyncModalPayload()"
+               class="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white font-semibold">
+      </div>
+
+      <!-- 1. 系統級藍牙 AirDrop / Quick Share / WhatsApp 分享按鈕 -->
+      <div class="space-y-1.5">
+        <button onclick="triggerQuickShareSync()" class="w-full bg-orange-600 hover:bg-orange-700 text-white font-black text-xs py-2.5 px-3 rounded-xl shadow flex items-center justify-center gap-1.5">
+          <span>📲 喚起藍牙 AirDrop / Quick Share / WhatsApp 傳送</span>
+        </button>
+        <button onclick="copyGroupSyncLink()" class="w-full bg-slate-900 hover:bg-slate-800 text-amber-300 font-bold text-xs py-2 px-3 rounded-xl">
+          📋 複製同團同步連結 (#sync=...)
+        </button>
+      </div>
+
+      <!-- 2. 同桌離線面對面 QR Code (當帳單筆數適中時自動繪製) -->
+      <div id="syncQrContainerBox" class="bg-slate-50 border border-slate-200 rounded-xl p-3 text-center space-y-1.5">
+        <div class="text-[11px] font-bold text-slate-700">📷 同桌團友免上網：直接用手機相機掃描合併</div>
+        <img id="groupSyncQrImg" src="" alt="同團同步 QR Code" class="w-40 h-40 mx-auto rounded-xl border border-slate-300 bg-white p-1">
+        <div id="groupSyncQrHint" class="text-[10px] text-slate-400">支援 iOS / Android 原生相機掃描即開</div>
+      </div>
+
+      <!-- 3. 手動貼上同步連結或同步碼 (防通訊軟體截斷備用) -->
+      <div class="pt-2 border-t border-slate-200 space-y-1.5">
+        <label class="text-[11px] font-black text-slate-700">📥 或在此貼上團友傳來的同步連結 / 同步碼：</label>
+        <div class="flex gap-1.5">
+          <input id="manualSyncPasteInput" type="text" placeholder="貼上含 #sync= 的網址或同步碼"
+                 class="flex-1 px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg">
+          <button onclick="handleManualPasteSync()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs px-3 rounded-lg shadow">
+            立即合併
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+
   <!-- Toast 浮動訊息提示 -->
   <div id="toastBanner" role="status" aria-live="polite" class="hidden fixed top-16 left-1/2 -translate-x-1/2 z-[80] bg-slate-900/95 text-amber-300 text-xs font-bold px-4 py-2.5 rounded-full shadow-xl border border-amber-400/30"></div>
 
@@ -1224,13 +1425,17 @@
       }
     }
 
-    function markAppStateDirty(immediateSave = false) {
+    function markAppStateDirty(immediateSave = false, showSyncPrompt = true) {
       if (typeof ExportBackup !== 'undefined') {
         if (typeof ExportBackup.markDirty === 'function') {
           ExportBackup.markDirty();
         }
         if (immediateSave) {
           ExportBackup.saveAutoSnapshot(() => window.appState, true);
+          if (showSyncPrompt) {
+            const banner = document.getElementById('unsyncedChangesBanner');
+            if (banner) banner.classList.remove('hidden');
+          }
         }
       }
     }
@@ -1256,7 +1461,13 @@
         [136, 18, 2],
         [156, 20, 2],
         [194, 24, 2],
-        [232, 30, 2]
+        [232, 30, 2],
+        [274, 18, 4],
+        [324, 20, 4],
+        [370, 24, 4],
+        [428, 26, 4],
+        [461, 20, 6],
+        [523, 22, 6]
       ];
       const ALIGN_POS = [
         null,
@@ -1268,7 +1479,13 @@
         [6, 34],
         [6, 22, 38],
         [6, 24, 42],
-        [6, 26, 46]
+        [6, 26, 46],
+        [6, 28, 50],
+        [6, 30, 54],
+        [6, 32, 58],
+        [6, 34, 62],
+        [6, 26, 46, 66],
+        [6, 26, 48, 70]
       ];
 
       const GF_EXP = new Uint8Array(512);
@@ -1320,8 +1537,8 @@
       function encodeMatrix(text) {
         const utf8 = new TextEncoder().encode(String(text));
         let ver = 1;
-        while (ver <= 9 && utf8.length + 2 > V_SPECS[ver][0]) ver++;
-        if (ver > 9) throw new Error('QR 資料過長');
+        while (ver <= 15 && utf8.length + 3 > V_SPECS[ver][0]) ver++;
+        if (ver > 15) throw new Error('QR 資料過長');
 
         const [totalDataLen, ecPerBlock, numBlocks] = V_SPECS[ver];
         const bits = [];
@@ -1330,7 +1547,7 @@
         };
 
         pushBits(0b0100, 4);
-        pushBits(utf8.length, 8);
+        pushBits(utf8.length, ver >= 10 ? 16 : 8);
         for (let i = 0; i < utf8.length; i++) pushBits(utf8[i], 8);
         for (let i = 0; i < 4 && bits.length < totalDataLen * 8; i++) bits.push(0);
         while (bits.length % 8 !== 0) bits.push(0);
@@ -1346,18 +1563,26 @@
           dataBytes[i] = pads[p];
         }
 
-        const blockSize = totalDataLen / numBlocks;
+        const baseBlockSize = Math.floor(totalDataLen / numBlocks);
+        const numLongBlocks = totalDataLen % numBlocks;
+        const numShortBlocks = numBlocks - numLongBlocks;
         const dataBlocks = [];
         const ecBlocks = [];
+        let offset = 0;
         for (let b = 0; b < numBlocks; b++) {
-          const block = dataBytes.slice(b * blockSize, (b + 1) * blockSize);
+          const bLen = baseBlockSize + (b >= numShortBlocks ? 1 : 0);
+          const block = dataBytes.slice(offset, offset + bLen);
+          offset += bLen;
           dataBlocks.push(block);
           ecBlocks.push(computeRS(block, ecPerBlock));
         }
 
         const finalCodewords = [];
-        for (let i = 0; i < blockSize; i++) {
-          for (let b = 0; b < numBlocks; b++) finalCodewords.push(dataBlocks[b][i]);
+        const maxBlockLen = baseBlockSize + (numLongBlocks > 0 ? 1 : 0);
+        for (let i = 0; i < maxBlockLen; i++) {
+          for (let b = 0; b < numBlocks; b++) {
+            if (i < dataBlocks[b].length) finalCodewords.push(dataBlocks[b][i]);
+          }
         }
         for (let i = 0; i < ecPerBlock; i++) {
           for (let b = 0; b < numBlocks; b++) finalCodewords.push(ecBlocks[b][i]);
@@ -1556,14 +1781,16 @@
     // 1. 稀有動物頭像庫與香港銀行代碼對照表
     // ------------------------------------------------------------------------
     const RARE_ANIMALS = [
-      { id: 'fox', name: '赤狐旅人', emoji: '🦊', img: './fox.jpg', rawImg: './IMG_2445_306587.jpeg' },
-      { id: 'bunny', name: '花冠垂耳兔', emoji: '🐰', img: './bunny.jpg', rawImg: './IMG_2449_306587.jpeg' },
-      { id: 'bear', name: '毛帽棕熊', emoji: '🐻', img: './bear.jpg', rawImg: './IMG_2450_306587.jpeg' },
-      { id: 'chick', name: '破殼小雞', emoji: '🐣', img: './chick.jpg', rawImg: './IMG_2451_306587.jpeg' },
-      { id: 'otter', name: '海獺掌櫃', emoji: '🦦', img: './otter.jpg', rawImg: './IMG_2448_306587.jpeg' },
-      { id: 'dog', name: '和服柴犬', emoji: '🐶', img: './dog.jpg', rawImg: './IMG_2455_306587.jpeg' },
-      { id: 'flamingo', name: '熱帶紅鶴', emoji: '🦩', img: './flamingo.jpg', rawImg: './IMG_2454_306587.jpeg' },
-      { id: 'sloth', name: '眼鏡樹懶', emoji: '🦥', img: './sloth.jpg', rawImg: './IMG_2453_306587.jpeg' }
+      { id: 'fox', name: '赤狐旅人', emoji: '🦊', img: './fox.jpg' },
+      { id: 'bunny', name: '花冠垂耳兔', emoji: '🐰', img: './bunny.jpg' },
+      { id: 'bear', name: '毛帽棕熊', emoji: '🐻', img: './bear.jpg' },
+      { id: 'chick', name: '破殼小雞', emoji: '🐣', img: './chick.jpg' },
+      { id: 'otter', name: '海獺掌櫃', emoji: '🦦', img: './otter.jpg' },
+      { id: 'dog', name: '和服柴犬', emoji: '🐶', img: './dog.jpg' },
+      { id: 'flamingo', name: '熱帶紅鶴', emoji: '🦩', img: './flamingo.jpg' },
+      { id: 'sloth', name: '眼鏡樹懶', emoji: '🦥', img: './sloth.jpg' },
+      { id: 'angel_sister', name: '天使姐姐', emoji: '👼', img: './angel.jpg' },
+      { id: 'muscle_hunk', name: '肌肉猛男', emoji: '💪', img: './muscle.jpg' }
     ];
 
     const HK_BANK_NAMES = {
@@ -1582,27 +1809,26 @@
       'OTHER': '其他香港結算銀行'
     };
 
-    const DEFAULT_CONFIRMED_FRIENDS = [
-      { id: 'u_manson', handle: 'MS-4K9P-7X2A', name: '阿強 (Manson)', animal: 'bear', status: 'friend' },
-      { id: 'u_may', handle: 'MS-9M2L-5V8C', name: '小美 (May)', animal: 'bunny', status: 'friend' }
-    ];
+    const DEFAULT_CONFIRMED_FRIENDS = [];
 
     function getConfirmedFriendsList() {
       if (!Array.isArray(window.appState.confirmedFriends)) {
-        window.appState.confirmedFriends = [...DEFAULT_CONFIRMED_FRIENDS];
+        window.appState.confirmedFriends = [];
       }
       return window.appState.confirmedFriends;
     }
 
     // ------------------------------------------------------------------------
-    // 2. 每日凌晨 02:12 跨日匯率懶人檢查引擎（支援多主貨幣基準換算）
+    // 2. 每日凌晨 02:12 跨日匯率懶人檢查引擎（支援 HKD / JPY / TWD / USD / EUR / KRW）
     // ------------------------------------------------------------------------
-    const RATE_CACHE_STORAGE_KEY = 'messy_split_daily_rates_v73';
+    const RATE_CACHE_STORAGE_KEY = 'messy_split_daily_rates_v74';
     const DEFAULT_FALLBACK_RATES_TO_HKD = {
       HKD: 1,
       JPY: 0.052,
       TWD: 0.245,
-      USD: 7.80
+      USD: 7.80,
+      EUR: 8.45,
+      KRW: 0.0056
     };
 
     function loadCachedRates() {
@@ -1610,7 +1836,12 @@
         const raw = localStorage.getItem(RATE_CACHE_STORAGE_KEY);
         if (raw) {
           const parsed = JSON.parse(raw);
-          if (parsed && parsed.ratesToHKD) return parsed;
+          if (parsed && parsed.ratesToHKD) {
+            return {
+              ...parsed,
+              ratesToHKD: { ...DEFAULT_FALLBACK_RATES_TO_HKD, ...parsed.ratesToHKD }
+            };
+          }
         }
       } catch (e) {}
       return {
@@ -1621,7 +1852,7 @@
     }
 
     /**
-     * 計算 1 單位 fromCurrency 可兌換多少 toMainCurrency
+     * 計算 1 單位 fromCurrency 可兌換多少 toMainCurrency (支援 KRW 6 位小數精度)
      */
     function getPairExchangeRate(fromCurrency, toMainCurrency = 'HKD') {
       if (!fromCurrency || fromCurrency === 'NONE' || fromCurrency === toMainCurrency) return 1;
@@ -1629,7 +1860,7 @@
       const fromInHKD = ratesToHKD[fromCurrency] || 1;
       const mainInHKD = ratesToHKD[toMainCurrency] || 1;
       const ratio = fromInHKD / mainInHKD;
-      return Number(ratio.toFixed(5));
+      return Number(ratio.toFixed(6));
     }
 
     function getLatest0212ThresholdMs() {
@@ -1674,7 +1905,9 @@
           HKD: 1,
           JPY: data.rates.JPY ? Number((1 / data.rates.JPY).toFixed(5)) : cached.ratesToHKD.JPY,
           TWD: data.rates.TWD ? Number((1 / data.rates.TWD).toFixed(4)) : cached.ratesToHKD.TWD,
-          USD: data.rates.USD ? Number((1 / data.rates.USD).toFixed(3)) : cached.ratesToHKD.USD
+          USD: data.rates.USD ? Number((1 / data.rates.USD).toFixed(3)) : cached.ratesToHKD.USD,
+          EUR: data.rates.EUR ? Number((1 / data.rates.EUR).toFixed(4)) : cached.ratesToHKD.EUR,
+          KRW: data.rates.KRW ? Number((1 / data.rates.KRW).toFixed(6)) : cached.ratesToHKD.KRW
         };
 
         const now = new Date();
@@ -1687,7 +1920,6 @@
         };
         localStorage.setItem(RATE_CACHE_STORAGE_KEY, JSON.stringify(updatedRecord));
 
-        // 僅更新群組的「當日新消費基準匯率」，已建立之舊帳單保留各自的 rateAtCreation 快照
         const currentGroup = getCurrentGroup();
         if (currentGroup) {
           const mainC = getGroupMainCurrency(currentGroup);
@@ -1700,7 +1932,10 @@
         renderAll();
 
         if (forceManual) {
-          showToast(`💱 已更新當日匯率：1 JPY = ${newRatesToHKD.JPY} HKD`);
+          const g = getCurrentGroup();
+          const fc = getGroupForeignCurrency(g);
+          const mc = getGroupMainCurrency(g);
+          showToast(`💱 已更新當日匯率：1 ${fc} = ${getPairExchangeRate(fc, mc)} ${mc}`);
         }
         return newRatesToHKD;
       } catch (err) {
@@ -1720,7 +1955,7 @@
     }
 
     // ------------------------------------------------------------------------
-    // 3. 全域應用程式狀態 (window.appState — 支援雙幣群組與雙幣公數池)
+    // 3. 全域應用程式狀態 (window.appState — 已移除試用假資料，支援雙幣與公數注資明細)
     // ------------------------------------------------------------------------
     let myPrivateInviteCode = localStorage.getItem('messy_my_invite_code') || 'MS-8F9A-22K1';
 
@@ -1732,79 +1967,31 @@
         name: '阿明',
         animal: 'fox'
       },
-      confirmedFriends: [...DEFAULT_CONFIRMED_FRIENDS],
-      currentGroupId: 'grp_tokyo_2026',
+      confirmedFriends: [],
+      currentGroupId: 'grp_default_01',
       groups: [
         {
-          id: 'grp_tokyo_2026',
-          name: '東京賞楓美食團 🍁',
+          id: 'grp_default_01',
+          name: '我的旅行分帳團 ✈️',
           mainCurrency: 'HKD',
-          currency: 'JPY', // 外幣 (第 2 貨幣)
+          currency: 'JPY',
           exchangeRate: loadCachedRates().ratesToHKD.JPY || 0.052,
+          poolTopups: [],
           poolBalances: {
             HKD: 0,
-            JPY: 15000
+            JPY: 0
           },
-          poolBalance: 15000, // 向下相容欄位
+          poolBalance: 0,
           includePoolInSettlement: false,
-          poolContributions: {
-            u_me: 299,
-            u_may: 299,
-            u_manson: 299,
-            u_ghost_1: 299
-          },
+          poolContributions: {},
           members: [
-            { id: 'u_me', name: '阿明', animal: 'fox', isAppUser: true },
-            { id: 'u_may', name: '小美', animal: 'bunny', isAppUser: true },
-            { id: 'u_manson', name: '阿強', animal: 'bear', isAppUser: true },
-            { id: 'u_ghost_1', name: '表弟(無App)', animal: 'chick', isAppUser: false }
+            { id: 'u_me', name: '阿明', animal: 'fox', isAppUser: true }
           ],
-          expenses: [
-            {
-              id: 'exp_101',
-              title: '新宿敘敘苑燒肉晚餐',
-              amount: 24000,
-              currency: 'JPY',
-              rateAtCreation: 0.052,
-              date: '2026-10-21',
-              payerId: 'u_me',
-              paidByPool: false,
-              participants: ['u_me', 'u_may', 'u_manson', 'u_ghost_1'],
-              customExtras: {},
-              receiptId: null,
-              receiptSizeKB: 0
-            },
-            {
-              id: 'exp_102',
-              title: '河口湖包車訂金 (公數支付)',
-              amount: 8000,
-              currency: 'JPY',
-              rateAtCreation: 0.052,
-              date: '2026-10-22',
-              payerId: 'POOL',
-              paidByPool: true,
-              participants: ['u_me', 'u_may', 'u_manson', 'u_ghost_1'],
-              customExtras: {},
-              receiptId: null,
-              receiptSizeKB: 0
-            }
-          ],
+          expenses: [],
           settlementStatus: {}
         }
       ],
-      notifications: [
-        {
-          id: 'notif_1',
-          type: 'payment_claim',
-          fromId: 'u_may',
-          fromName: '小美',
-          toId: 'u_me',
-          amountHKD: 312.0,
-          groupId: 'grp_tokyo_2026',
-          status: 'pending',
-          time: '10 分鐘前'
-        }
-      ]
+      notifications: []
     };
 
     let currentUnlockedVaultPassword = null;
@@ -1813,23 +2000,23 @@
     let hasExistingVaultInDB = false;
     let pendingReceiptBlob = null;
     let editingExpenseId = null;
+    let editingPoolTopupId = null;
     let selectedExpenseCurrency = 'JPY';
     let selectedPoolTopupCurrency = 'JPY';
     let claimingGhostMemberId = null;
     let stagedNewGroupMembers = [];
     let editingPlaceholderIndex = null;
     let activeSettlementPayment = null;
-    let deferredPWAInstallPrompt = null;
 
     // ------------------------------------------------------------------------
-    // 雙幣輔助函式：確保舊版單幣資料無縫升級為雙幣結構
+    // 雙幣與公數注資明細重算輔助函式
     // ------------------------------------------------------------------------
     function getGlobalMainCurrency() {
       return window.appState.mainCurrency || 'HKD';
     }
 
     function getGroupMainCurrency(group) {
-      return (group && group.mainCurrency) || getGlobalMainCurrency();
+      return (group && group.mainCurrency) || 'HKD';
     }
 
     function getGroupForeignCurrency(group) {
@@ -1838,19 +2025,96 @@
       return group.currency;
     }
 
+    /**
+     * [目標 5] 根據每次獨立的公數注資明細 (poolTopups) 與公數消費帳單，即時重算公數池總結餘與出資比例
+     */
     function ensureGroupPoolBalances(group) {
+      if (!group) return { HKD: 0 };
       const mainC = getGroupMainCurrency(group);
       const foreignC = getGroupForeignCurrency(group);
-      if (!group.poolBalances || typeof group.poolBalances !== 'object') {
-        group.poolBalances = {
-          [mainC]: 0,
-          [foreignC]: Number(group.poolBalance) || 0
-        };
+      const gRate = Number(group.exchangeRate) || 1;
+
+      if (!Array.isArray(group.poolTopups)) {
+        group.poolTopups = [];
+        const oldBals = group.poolBalances || {};
+        const oldForeign = Number(oldBals[foreignC] ?? group.poolBalance ?? 0);
+        const oldMain = foreignC !== mainC ? Number(oldBals[mainC] ?? 0) : 0;
+        if (oldForeign > 0) {
+          group.poolTopups.push({
+            id: 'topup_init_f',
+            date: new Date().toISOString().slice(0, 10),
+            currency: foreignC,
+            amount: oldForeign,
+            rateAtCreation: gRate,
+            contributor: 'ALL',
+            note: '初始公數結餘'
+          });
+        }
+        if (oldMain > 0) {
+          group.poolTopups.push({
+            id: 'topup_init_m',
+            date: new Date().toISOString().slice(0, 10),
+            currency: mainC,
+            amount: oldMain,
+            rateAtCreation: 1,
+            contributor: 'ALL',
+            note: '初始主幣公數'
+          });
+        }
       }
-      if (group.poolBalances[mainC] === undefined) group.poolBalances[mainC] = 0;
-      if (group.poolBalances[foreignC] === undefined) group.poolBalances[foreignC] = 0;
-      // 同步舊版欄位供匯出報表相容
-      group.poolBalance = group.poolBalances[foreignC];
+
+      const balances = { [mainC]: 0, [foreignC]: 0 };
+      const contribs = {};
+      (group.members || []).forEach((m) => (contribs[m.id] = 0));
+
+      group.poolTopups.forEach((t) => {
+        const curr = t.currency || foreignC;
+        const amt = Number(t.amount) || 0;
+        if (amt <= 0) return;
+        balances[curr] = (Number(balances[curr]) || 0) + amt;
+
+        const rateToMain = curr === mainC ? 1 : Number(t.rateAtCreation) || gRate;
+        const valInMain = amt * rateToMain;
+
+        if (t.contributor === 'ALL' && group.members.length > 0) {
+          const perMember = valInMain / group.members.length;
+          group.members.forEach((m) => {
+            contribs[m.id] = (Number(contribs[m.id]) || 0) + perMember;
+          });
+        } else if (t.contributor && contribs[t.contributor] !== undefined) {
+          contribs[t.contributor] = (Number(contribs[t.contributor]) || 0) + valInMain;
+        }
+      });
+
+      (group.expenses || []).forEach((exp) => {
+        if (exp.paidByPool) {
+          const expCurr = exp.currency || foreignC;
+          const amt = Number(exp.amount) || 0;
+          balances[expCurr] = (Number(balances[expCurr]) || 0) - amt;
+        }
+      });
+
+      // 若單一幣別公數因跨幣消費出現負數，自動由另一幣別公數池按基準匯率折抵補齊
+      if (foreignC !== mainC && gRate > 0) {
+        if (balances[foreignC] < -0.001 && balances[mainC] > 0) {
+          const neededMain = (-balances[foreignC]) * gRate;
+          const coveredMain = Math.min(balances[mainC], neededMain);
+          balances[mainC] -= coveredMain;
+          balances[foreignC] += coveredMain / gRate;
+        } else if (balances[mainC] < -0.001 && balances[foreignC] > 0) {
+          const neededForeign = (-balances[mainC]) / gRate;
+          const coveredForeign = Math.min(balances[foreignC], neededForeign);
+          balances[foreignC] -= coveredForeign;
+          balances[mainC] += coveredForeign * gRate;
+        }
+      }
+
+      balances[mainC] = Math.round((Number(balances[mainC]) || 0) * 100) / 100;
+      balances[foreignC] = Math.round((Number(balances[foreignC]) || 0) * 100) / 100;
+
+      group.poolBalances = balances;
+      group.poolBalance = balances[foreignC] || 0;
+      group.poolContributions = contribs;
       return group.poolBalances;
     }
 
@@ -1864,9 +2128,13 @@
     }
 
     // ------------------------------------------------------------------------
-    // 4. 啟動初始化：持久化儲存 + 自動備份引擎 + 金庫初始化狀態檢查
+    // 4. 啟動初始化：直向鎖定 + 持久化儲存 + 自動備份引擎 + 金庫初始化狀態檢查
     // ------------------------------------------------------------------------
     window.addEventListener('DOMContentLoaded', async () => {
+      if (screen.orientation && typeof screen.orientation.lock === 'function') {
+        screen.orientation.lock('portrait').catch(() => {});
+      }
+
       const dateInput = document.getElementById('expDateInput');
       if (dateInput) dateInput.value = new Date().toISOString().slice(0, 10);
 
@@ -1888,16 +2156,16 @@
             window.appState = snapshot.state;
             if (!window.appState.mainCurrency) window.appState.mainCurrency = 'HKD';
             if (!Array.isArray(window.appState.confirmedFriends)) {
-              window.appState.confirmedFriends = [...DEFAULT_CONFIRMED_FRIENDS];
+              window.appState.confirmedFriends = [];
             }
           }
         } catch (e) {}
         ExportBackup.startAutoBackupEngine(() => window.appState, 60000);
       }
 
-      // 檢查 IndexedDB 是否已存在加密金庫，決定顯示「首次雙重密碼設定」或「解鎖列」
+      initPwaInstallButton();
+      initSwipeRightToRevealEngine();
       await refreshVaultSetupStatus();
-
       checkAndSyncDailyRates(false);
 
       if ('serviceWorker' in navigator) {
@@ -1908,11 +2176,8 @@
         }
       }
 
-      initLocalhostDevHelperOnly();
-
       renderAll();
 
-      // 接聽 QR 掃碼邀請 (?invite=)、跨機破鎖通知 (?sync_claim=) 與 PWA 桌面捷徑 (?action=)
       const urlParams = new URLSearchParams(window.location.search);
       const inviteParam = urlParams.get('invite');
       const actionParam = urlParams.get('action');
@@ -1932,9 +2197,16 @@
       } else if (actionParam === 'settlement') {
         switchTab('settle');
       }
+
+      // 啟動時與背景切換時自動檢查 URL Hash (#sync=... 或 #claim=...)
+      checkAndProcessUrlHashSync();
+      window.addEventListener('hashchange', checkAndProcessUrlHashSync);
     });
 
     async function checkVaultRecordExistsInDB() {
+      if (typeof DBCrypto !== 'undefined' && typeof DBCrypto.hasEncryptedVault === 'function') {
+        return await DBCrypto.hasEncryptedVault();
+      }
       if (typeof DBCrypto === 'undefined' || typeof DBCrypto.openDB !== 'function') return false;
       try {
         const db = await DBCrypto.openDB();
@@ -1965,10 +2237,10 @@
       if (!hasExistingVaultInDB) {
         if (setupBox) setupBox.classList.remove('hidden');
         if (unlockBox) unlockBox.classList.add('hidden');
-        if (subtitle) subtitle.textContent = '首次啟用：請設定並重複確認你的專屬金庫密碼';
+        if (subtitle) subtitle.textContent = '首次啟用：請設定 8 位以上英數混合密碼（最少含 1 個英文大楷）';
         if (badge) {
           badge.textContent = '🆕 首次設定';
-          badge.className = 'text-[11px] bg-amber-100 text-amber-900 font-bold px-2.5 py-1 rounded-full';
+          badge.className = 'text-xs bg-amber-100 text-amber-900 border border-amber-300 font-black px-3.5 py-1.5 rounded-full shrink-0 whitespace-nowrap shadow-sm';
         }
       } else {
         if (setupBox) setupBox.classList.add('hidden');
@@ -1976,7 +2248,7 @@
         if (subtitle) subtitle.textContent = '已受 PBKDF2 + AES-GCM 256-bit 加密保護';
         if (badge) {
           badge.textContent = '🔒 已鎖定';
-          badge.className = 'text-[11px] bg-rose-100 text-rose-800 font-bold px-2.5 py-1 rounded-full';
+          badge.className = 'text-xs bg-rose-100 text-rose-800 font-black px-3.5 py-1.5 rounded-full shrink-0 whitespace-nowrap shadow-sm';
         }
       }
     }
@@ -2016,35 +2288,6 @@
       }
     }
 
-    function initLocalhostDevHelperOnly() {
-      const host = window.location.hostname;
-      if (host === 'localhost' || host === '127.0.0.1') {
-        const devBar = document.createElement('div');
-        devBar.className = 'bg-slate-900 text-amber-300 text-[10px] px-3 py-1 flex items-center justify-between';
-        devBar.innerHTML = `
-          <span>🔧 [Localhost Dev Only] 容器寬度預覽：</span>
-          <input type="range" min="360" max="540" value="430" class="w-28 accent-orange-500"
-                 oninput="document.documentElement.style.setProperty('--shell-max-width', this.value + 'px')">
-        `;
-        const shell = document.getElementById('appShell');
-        if (shell) shell.prepend(devBar);
-      }
-    }
-
-    window.addEventListener('beforeinstallprompt', (e) => {
-      e.preventDefault();
-      deferredPWAInstallPrompt = e;
-      document.getElementById('pwaInstallBtn').classList.remove('hidden');
-    });
-
-    async function triggerPWAInstall() {
-      if (!deferredPWAInstallPrompt) return;
-      deferredPWAInstallPrompt.prompt();
-      await deferredPWAInstallPrompt.userChoice;
-      deferredPWAInstallPrompt = null;
-      document.getElementById('pwaInstallBtn').classList.add('hidden');
-    }
-
     // ------------------------------------------------------------------------
     // 5. 畫面渲染總控與動物頭像縮圖渲染器 (renderAnimalAvatar)
     // ------------------------------------------------------------------------
@@ -2060,7 +2303,7 @@
     function renderAnimalAvatar(animalId, imgClass = 'w-full h-full rounded-full object-cover') {
       const found = RARE_ANIMALS.find((a) => a.id === animalId) || RARE_ANIMALS[0];
       if (found.img) {
-        return `<img src="${found.img}" alt="${escapeHTML(found.name)}" class="${imgClass}" data-alt-src="${found.rawImg || ''}" data-emoji="${found.emoji}" onerror="if(this.dataset.altSrc && this.src.indexOf(this.dataset.altSrc.replace('./',''))===-1){this.src=this.dataset.altSrc;}else{this.outerHTML='<span>'+this.dataset.emoji+'</span>';}">`;
+        return `<img src="${found.img}" alt="${escapeHTML(found.name)}" class="${imgClass}" data-emoji="${found.emoji}" onerror="this.outerHTML='<span>'+this.dataset.emoji+'</span>';">`;
       }
       return `<span>${found.emoji}</span>`;
     }
@@ -2093,15 +2336,35 @@
     }
 
     // ------------------------------------------------------------------------
-    // 6. 最少步埋單貪婪演算法 (v7.3 支援每筆帳單獨立貨幣 + rateAtCreation + 雙幣公數池退還)
+    // 6. 最少步埋單貪婪演算法 (v7.4 支援主幣/外幣公數單獨出資、跨幣公數折抵與退還)
     // ------------------------------------------------------------------------
     function calculateMinimumSettlements(group) {
       const mainC = getGroupMainCurrency(group);
       const foreignC = getGroupForeignCurrency(group);
       const groupRate = Number(group.exchangeRate) || 1;
       const netInMain = {};
+      const memberCount = group.members.length || 1;
       group.members.forEach((m) => (netInMain[m.id] = 0));
 
+      // (A) 計算公數池注資：若為「單獨出資 (contributor !== 'ALL')」，出資人代全團墊支公數
+      const poolBals = ensureGroupPoolBalances(group);
+      (group.poolTopups || []).forEach((t) => {
+        const tCurr = t.currency || foreignC;
+        const tAmt = Number(t.amount) || 0;
+        if (tAmt <= 0) return;
+        const tRate = tCurr === mainC ? 1 : Number(t.rateAtCreation) || groupRate;
+        const tValInMain = tAmt * tRate;
+
+        if (t.contributor && t.contributor !== 'ALL' && netInMain[t.contributor] !== undefined) {
+          netInMain[t.contributor] += tValInMain;
+          const equalPoolShare = tValInMain / memberCount;
+          group.members.forEach((m) => {
+            netInMain[m.id] -= equalPoolShare;
+          });
+        }
+      });
+
+      // (B) 計算每筆消費賬單（含個人墊支及公數支付之非對稱分攤/個人加項）
       group.expenses.forEach((exp) => {
         const amt = Number(exp.amount) || 0;
         const rateSnap = getExpenseRateSnapshot(exp, group);
@@ -2112,11 +2375,17 @@
             ? exp.participants
             : group.members.map((m) => m.id);
 
-        if (!exp.paidByPool && exp.payerId && netInMain[exp.payerId] !== undefined) {
+        if (exp.paidByPool) {
+          // 公數池由全體團友共同擁有，支付時相當於全團每人出資 amtInMain / memberCount 替參與者買單
+          const poolOwnerShare = amtInMain / memberCount;
+          group.members.forEach((m) => {
+            netInMain[m.id] += poolOwnerShare;
+          });
+        } else if (exp.payerId && netInMain[exp.payerId] !== undefined) {
           netInMain[exp.payerId] += amtInMain;
         }
 
-        if (!exp.paidByPool && parts.length > 0) {
+        if (parts.length > 0) {
           let extrasSumOrig = 0;
           const extrasMap = exp.customExtras && typeof exp.customExtras === 'object' ? exp.customExtras : {};
           Object.entries(extrasMap).forEach(([pid, extraVal]) => {
@@ -2135,13 +2404,20 @@
         }
       });
 
-      // 將雙幣公數池總餘額折算為主貨幣退還
-      const poolBals = ensureGroupPoolBalances(group);
+      // (C) [雙層改良] 若勾選「將公數池餘額納入最終結算退還」：
+      // 1. 固定錨定公數保管人（優先讀取 group.poolHolderId，否則固定為開團首位成員 members[0].id，跨機絕不因 'u_me' 視角改變而浮動）
+      // 2. 嚴格按各團友於 group.poolContributions 的累計注資比例退還（若無注資紀錄才平分），確保零和守恆
       const totalPoolInMain =
         (Number(poolBals[mainC]) || 0) +
         (foreignC !== mainC ? (Number(poolBals[foreignC]) || 0) * groupRate : 0);
 
-      if (group.includePoolInSettlement && totalPoolInMain > 0 && group.members.length > 0) {
+      if (group.includePoolInSettlement && totalPoolInMain > 0.01 && group.members.length > 0) {
+        const holderId =
+          group.poolHolderId && netInMain[group.poolHolderId] !== undefined
+            ? group.poolHolderId
+            : group.members[0].id;
+        netInMain[holderId] -= totalPoolInMain;
+
         const contribs =
           group.poolContributions && typeof group.poolContributions === 'object'
             ? group.poolContributions
@@ -2151,15 +2427,15 @@
           totalContrib += Number(contribs[m.id]) || 0;
         });
 
-        if (totalContrib > 0) {
+        if (totalContrib > 0.01) {
           group.members.forEach((m) => {
             const c = Number(contribs[m.id]) || 0;
             netInMain[m.id] += totalPoolInMain * (c / totalContrib);
           });
         } else {
-          const perMemberRefund = totalPoolInMain / group.members.length;
+          const refundPerMember = totalPoolInMain / memberCount;
           group.members.forEach((m) => {
-            netInMain[m.id] += perMemberRefund;
+            netInMain[m.id] += refundPerMember;
           });
         }
       }
@@ -2205,12 +2481,21 @@
     }
 
     // ------------------------------------------------------------------------
-    // 7. 頂部團友頭像列（短按自己跳轉換裝、短按無App團友可綁定認領、長按看狀態）
+    // 7. 頂部團友頭像列（加入 8px 位移閾值鎖定，防止左右滑動誤觸長按與短按）
     // ------------------------------------------------------------------------
     function renderGroupAvatarBar(group, netBalancesHKD, settlements) {
       const bar = document.getElementById('groupAvatarBar');
       const mainC = getGroupMainCurrency(group);
       bar.innerHTML = '';
+
+      let activePressTimer = null;
+      const cancelAnyPress = () => {
+        if (activePressTimer) {
+          clearTimeout(activePressTimer);
+          activePressTimer = null;
+        }
+      };
+      bar.onscroll = cancelAnyPress;
 
       group.members.forEach((m) => {
         const net = netBalancesHKD[m.id] || 0;
@@ -2228,26 +2513,47 @@
         const item = document.createElement('div');
         item.className = 'flex flex-col items-center shrink-0 cursor-pointer select-none';
 
-        let pressTimer = null;
         let longPressed = false;
+        let hasMoved = false;
+        let startX = 0;
+        let startY = 0;
 
-        item.addEventListener('pointerdown', () => {
+        item.addEventListener('pointerdown', (e) => {
           longPressed = false;
-          pressTimer = setTimeout(() => {
-            longPressed = true;
-            showHelpTip(
-              `${m.name} 的即時結算狀態`,
-              `淨額：${mainC} ${net.toFixed(2)}\n身分別：${m.isAppUser ? '📱 已綁定 App 用戶' : '🐣 無 App 替身席位（點擊可綁定邀請碼認領）'}\n狀態：${isConfirmedClean ? '🌿 已結清無欠款' : isPendingConfirm ? '⏳ 已申告付款，待債主破鎖' : '🥀 尚有欠款待埋單'}`
-            );
-          }, 450);
+          hasMoved = false;
+          startX = e.clientX;
+          startY = e.clientY;
+          cancelAnyPress();
+
+          activePressTimer = setTimeout(() => {
+            if (!hasMoved) {
+              longPressed = true;
+              showHelpTip(
+                `${m.name} 的即時結算狀態`,
+                `淨額：${mainC} ${net.toFixed(2)}\n身分別：${m.isAppUser ? '📱 已綁定 App 用戶' : '🐣 無 App 替身席位（點擊可綁定邀請碼認領）'}\n狀態：${isConfirmedClean ? '🌿 已結清無欠款' : isPendingConfirm ? '⏳ 已申告付款，待債主破鎖' : '🥀 尚有欠款待埋單'}`
+              );
+            }
+          }, 480);
         });
 
-        const clearPress = () => {
-          if (pressTimer) clearTimeout(pressTimer);
-        };
+        item.addEventListener('pointermove', (e) => {
+          if (hasMoved) return;
+          if (Math.hypot(e.clientX - startX, e.clientY - startY) > 8) {
+            hasMoved = true;
+            cancelAnyPress();
+          }
+        });
+
+        item.addEventListener('pointercancel', () => {
+          hasMoved = true;
+          cancelAnyPress();
+        });
+
+        item.addEventListener('pointerleave', cancelAnyPress);
+
         item.addEventListener('pointerup', () => {
-          clearPress();
-          if (!longPressed) {
+          cancelAnyPress();
+          if (!longPressed && !hasMoved) {
             if (m.id === 'u_me') {
               switchTab('settings');
               showToast('🦊 已跳轉至個人角色換裝與金庫設定');
@@ -2258,7 +2564,6 @@
             }
           }
         });
-        item.addEventListener('pointerleave', clearPress);
 
         item.innerHTML = `
           <div class="relative w-12 h-12 rounded-full bg-white flex items-center justify-center text-2xl ${ringClass}">
@@ -2333,6 +2638,10 @@
         document.getElementById('poolBalanceDisplay').textContent = `${mainC} ${mainPool.toLocaleString()}`;
         document.getElementById('poolBalanceSubDisplay').textContent = `單幣公數模式 (${mainC})`;
         document.getElementById('poolBalanceHKDDisplay').textContent = `公數池結餘：${mainC} ${mainPool.toFixed(2)}`;
+      } else if (foreignPool === 0 && mainPool > 0) {
+        document.getElementById('poolBalanceDisplay').textContent = `${mainC} ${mainPool.toLocaleString()}`;
+        document.getElementById('poolBalanceSubDisplay').textContent = `外幣公數：${foreignC} 0`;
+        document.getElementById('poolBalanceHKDDisplay').textContent = `合共折合主貨幣：${mainC} ${totalPoolInMain.toFixed(2)}`;
       } else {
         document.getElementById('poolBalanceDisplay').textContent = `${foreignC} ${foreignPool.toLocaleString()}`;
         document.getElementById('poolBalanceSubDisplay').textContent = `主貨幣公數：${mainC} ${mainPool.toLocaleString()}`;
@@ -2381,30 +2690,33 @@
               : `匯率快照 ${rateSnap}`;
 
           return `
-            <div class="bg-white rounded-2xl p-3.5 shadow-sm border border-slate-200/80 flex items-center justify-between">
-              <div class="pr-2 flex-1 min-w-0">
-                <div class="flex items-center gap-1.5 flex-wrap">
-                  <span class="text-[10px] font-bold bg-slate-100 text-slate-600 px-2 py-0.5 rounded">${escapeHTML(exp.date)}</span>
-                  <span class="text-[10px] font-bold ${exp.paidByPool ? 'bg-amber-100 text-amber-900' : 'bg-emerald-50 text-emerald-700'} px-2 py-0.5 rounded">${escapeHTML(payerLabel)}</span>
-                  <span class="text-[9px] text-slate-400 font-semibold">${escapeHTML(rateHint)}</span>
-                </div>
-                <div class="font-black text-sm text-slate-800 mt-1 truncate">${escapeHTML(exp.title)}</div>
-                <div class="text-[11px] text-slate-500 mt-0.5">
-                  分攤：${escapeHTML((exp.participants || []).map((id) => memberMap[id] || id).join('、'))}
-                </div>
-                ${extraBadgeHTML}
-                <div>${receiptBtn}</div>
+            <div class="swipe-item-wrap shadow-sm">
+              <div class="swipe-actions-left">
+                <button onclick="openAddExpenseModal('${exp.id}')" class="flex-1 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs flex flex-col items-center justify-center gap-0.5">
+                  <span>✏️</span><span>編輯</span>
+                </button>
+                <button onclick="deleteExpense('${exp.id}')" class="flex-1 bg-rose-600 hover:bg-rose-700 text-white font-black text-xs flex flex-col items-center justify-center gap-0.5">
+                  <span>🗑️</span><span>刪除</span>
+                </button>
               </div>
-              <div class="text-right shrink-0 flex flex-col items-end gap-1">
-                <div class="font-black text-sm text-slate-900">${escapeHTML(expCurr)} ${amt.toLocaleString()}</div>
-                <div class="text-[11px] font-bold text-orange-600">${escapeHTML(mainC)} ${amtInMain.toFixed(2)}</div>
-                <div class="flex items-center gap-1 mt-0.5">
-                  <button onclick="openAddExpenseModal('${exp.id}')" title="編輯此筆帳單" class="text-[10px] text-slate-500 hover:text-orange-600 font-bold px-1.5 py-0.5 rounded hover:bg-orange-50">
-                    ✏️ 編輯
-                  </button>
-                  <button onclick="deleteExpense('${exp.id}')" title="刪除此筆帳單" class="text-[10px] text-slate-400 hover:text-rose-600 font-bold px-1.5 py-0.5 rounded hover:bg-rose-50">
-                    🗑️ 刪除
-                  </button>
+              <div class="swipe-content-card bg-white rounded-2xl p-3.5 border border-slate-200/80 flex items-center justify-between">
+                <div class="pr-2 flex-1 min-w-0">
+                  <div class="flex items-center gap-1.5 flex-wrap">
+                    <span class="text-[10px] font-bold bg-slate-100 text-slate-600 px-2 py-0.5 rounded">${escapeHTML(exp.date)}</span>
+                    <span class="text-[10px] font-bold ${exp.paidByPool ? 'bg-amber-100 text-amber-900' : 'bg-emerald-50 text-emerald-700'} px-2 py-0.5 rounded">${escapeHTML(payerLabel)}</span>
+                    <span class="text-[9px] text-slate-400 font-semibold">${escapeHTML(rateHint)}</span>
+                  </div>
+                  <div class="font-black text-sm text-slate-800 mt-1 truncate">${escapeHTML(exp.title)}</div>
+                  <div class="text-[11px] text-slate-500 mt-0.5">
+                    分攤：${escapeHTML((exp.participants || []).map((id) => memberMap[id] || id).join('、'))}
+                  </div>
+                  ${extraBadgeHTML}
+                  <div>${receiptBtn}</div>
+                </div>
+                <div class="text-right shrink-0 flex flex-col items-end gap-0.5">
+                  <div class="font-black text-sm text-slate-900">${escapeHTML(expCurr)} ${amt.toLocaleString()}</div>
+                  <div class="text-[11px] font-bold text-orange-600">${escapeHTML(mainC)} ${amtInMain.toFixed(2)}</div>
+                  <div class="text-[9px] text-slate-400 mt-1">👉 右拉編輯/刪除</div>
                 </div>
               </div>
             </div>
@@ -2429,6 +2741,8 @@
         poolBals[expCurr] = (Number(poolBals[expCurr]) || 0) + (Number(exp.amount) || 0);
         group.poolBalance = poolBals[getGroupForeignCurrency(group)];
       }
+      if (!Array.isArray(group.deletedExpenseIds)) group.deletedExpenseIds = [];
+      if (!group.deletedExpenseIds.includes(expId)) group.deletedExpenseIds.push(expId);
       group.expenses.splice(idx, 1);
       markAppStateDirty(true);
       renderAll();
@@ -2651,21 +2965,19 @@
       }
 
       const paidByPool = payerVal === 'POOL';
-      const availableInTargetPool = Number(poolBals[expCurrency]) || 0;
+      const gRate = Number(group.exchangeRate) || 1;
+      const totalPoolInMain =
+        (Number(poolBals[mainC]) || 0) +
+        (foreignC !== mainC ? (Number(poolBals[foreignC]) || 0) * gRate : 0);
+      const expInMain = expCurrency === mainC ? amount : amount * gRate;
 
-      if (paidByPool && availableInTargetPool < amount) {
-        // 復原回補並提示
+      if (paidByPool && totalPoolInMain + 0.01 < expInMain) {
         if (existingExp && existingExp.paidByPool) {
           const oldCurr = existingExp.currency || foreignC;
           poolBals[oldCurr] = (Number(poolBals[oldCurr]) || 0) - (Number(existingExp.amount) || 0);
         }
-        return showToast(`⚠️ ${expCurrency} 公數池餘額不足 (剩餘 ${availableInTargetPool})，請先注資 ${expCurrency}`);
+        return showToast(`⚠️ 公數資金池總結餘不足 (共折合 ${mainC} ${totalPoolInMain.toFixed(2)})，請先注資公數`);
       }
-
-      if (paidByPool) {
-        poolBals[expCurrency] = availableInTargetPool - amount;
-      }
-      group.poolBalance = poolBals[foreignC];
 
       let receiptId = existingExp ? existingExp.receiptId : null;
       let receiptSizeKB = existingExp ? existingExp.receiptSizeKB : 0;
@@ -2690,6 +3002,7 @@
         existingExp.customExtras = customExtras;
         existingExp.receiptId = receiptId;
         existingExp.receiptSizeKB = receiptSizeKB;
+        existingExp.updatedAt = Date.now();
       } else {
         group.expenses.push({
           id: 'exp_' + (crypto.randomUUID ? crypto.randomUUID() : Date.now() + '_' + Math.random().toString(36).slice(2)),
@@ -2703,7 +3016,8 @@
           participants: checkedIds,
           customExtras,
           receiptId,
-          receiptSizeKB
+          receiptSizeKB,
+          updatedAt: Date.now()
         });
       }
 
@@ -3063,7 +3377,7 @@
       if (shareSyncLink) {
         try {
           const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(claimPayload))));
-          const syncUrl = `${window.location.origin}${window.location.pathname}?sync_claim=${encodeURIComponent(encoded)}`;
+          const syncUrl = `${window.location.origin}${window.location.pathname}#claim=${encodeURIComponent(encoded)}`;
           const mainC = getGroupMainCurrency(group);
           const shareText = `💸 【混賬過數破鎖通知】${claimPayload.fromName} 已過數 ${mainC} ${Number(claimPayload.amountHKD).toFixed(2)} 畀 ${activeSettlementPayment.toName}！債主請點擊連結確認收妥並斬斷荊棘鎖鏈：${syncUrl}`;
           if (navigator.share) {
@@ -3100,37 +3414,26 @@
       const foreignC = getGroupForeignCurrency(group);
       const poolBals = ensureGroupPoolBalances(group);
 
-      // 為確保雙幣混合帳單在 CSV/Excel/PDF 報表中精準對應匯率快照，將主貨幣帳單折算為等效基準或附註幣別
-      const normalizedExpenses = group.expenses.map((e) => {
-        const expCurr = e.currency || foreignC;
-        const snapRate = getExpenseRateSnapshot(e, group);
-        const gRate = Number(group.exchangeRate) || 1;
-        // 讓 exportToCSV 內部的 amt * group.exchangeRate 等於真實的 amt * snapRate
-        const equivAmount = gRate > 0 ? (Number(e.amount) * snapRate) / gRate : Number(e.amount);
-        return {
-          ...e,
-          title: expCurr !== foreignC ? `${e.title} [原幣: ${expCurr} ${e.amount}]` : e.title,
-          amount: equivAmount
-        };
-      });
-
       const payload = {
         name: group.name,
+        mainCurrency: mainC,
         currency: foreignC,
         exchangeRate: group.exchangeRate,
         members: group.members,
-        expenses: normalizedExpenses,
-        settlements: group.calculatedSettlements || [],
+        expenses: group.expenses || [],
+        poolTopups: group.poolTopups || [],
+        poolBalances: poolBals,
         poolBalance: poolBals[foreignC] || 0,
+        settlements: group.calculatedSettlements || [],
         includePoolInSettlement: !!group.includePoolInSettlement
       };
 
       if (format === 'csv') {
         ExportBackup.exportToCSV(payload);
-        showToast('📑 已匯出 UTF-8 BOM CSV 報表！');
+        showToast('📑 已匯出雙幣與公數明細 CSV 報表！');
       } else if (format === 'excel') {
         ExportBackup.exportToExcel(payload);
-        showToast('📊 已匯出雙分頁 Excel (.xls) 報表！');
+        showToast('📊 已匯出三分頁 Excel (.xls) 報表！');
       } else if (format === 'pdf') {
         ExportBackup.exportToPDF(payload);
       }
@@ -3264,33 +3567,72 @@
       showToast(`🎉 已透過私密邀請碼 ${code} 新增常用好友！`);
     }
 
-    function openCreateGroupModal() {
-      const mainC = getGlobalMainCurrency();
-      document.getElementById('newGroupNameInput').value = '';
-      document.getElementById('newGroupMainCurrBadge').textContent = mainC;
-      autoFillExchangeRate(document.getElementById('newGroupCurrencySelect').value);
-      stagedNewGroupMembers = [
-        {
-          id: window.appState.currentUser.id,
-          name: window.appState.currentUser.name,
-          animal: window.appState.currentUser.animal,
-          isAppUser: true,
+    let editingGroupId = null;
+
+    function openEditCurrentGroupModal() {
+      const group = getCurrentGroup();
+      if (!group) return;
+      openCreateGroupModal(group.id);
+    }
+
+    function openCreateGroupModal(groupIdToEdit = null) {
+      editingGroupId = groupIdToEdit || null;
+      const existingGroup = editingGroupId
+        ? window.appState.groups.find((g) => g.id === editingGroupId)
+        : null;
+
+      document.getElementById('createGroupModalTitle').textContent = existingGroup
+        ? '⚙️ 修改群組名稱、貨幣與成員'
+        : '🏕️ 開立新旅行／聚會群組';
+      document.getElementById('confirmCreateGroupBtn').textContent = existingGroup
+        ? '💾 儲存群組修改'
+        : '🚀 確定建立群組（統一發送入團通知）';
+
+      const mainC = existingGroup ? getGroupMainCurrency(existingGroup) : getGlobalMainCurrency();
+      const mainSel = document.getElementById('newGroupMainCurrSelect');
+      if (mainSel) mainSel.value = mainC;
+
+      const currSel = document.getElementById('newGroupCurrencySelect');
+      if (existingGroup) {
+        document.getElementById('newGroupNameInput').value = existingGroup.name;
+        const fCurr = getGroupForeignCurrency(existingGroup);
+        currSel.value = fCurr === mainC ? 'NONE' : fCurr;
+        const rateInput = document.getElementById('newGroupRateInput');
+        rateInput.value = fCurr === mainC ? 1 : existingGroup.exchangeRate;
+        rateInput.disabled = fCurr === mainC;
+
+        stagedNewGroupMembers = existingGroup.members.map((m) => ({
+          ...m,
           isPlaceholder: false
-        },
-        {
-          id: 'ghost_' + Date.now(),
-          name: '點擊設定',
-          animal: null,
-          isAppUser: false,
-          isPlaceholder: true
-        }
-      ];
+        }));
+        addGreyPlaceholderSlot();
+      } else {
+        document.getElementById('newGroupNameInput').value = '';
+        autoFillExchangeRate(currSel.value);
+        stagedNewGroupMembers = [
+          {
+            id: window.appState.currentUser.id,
+            name: window.appState.currentUser.name,
+            animal: window.appState.currentUser.animal,
+            isAppUser: true,
+            isPlaceholder: false
+          },
+          {
+            id: 'ghost_' + Date.now(),
+            name: '點擊新增',
+            animal: null,
+            isAppUser: false,
+            isPlaceholder: true
+          }
+        ];
+      }
+
       renderCreateGroupModalUI();
       document.getElementById('createGroupModal').classList.remove('hidden');
     }
 
     function autoFillExchangeRate(foreignCurr) {
-      const mainC = getGlobalMainCurrency();
+      const mainC = document.getElementById('newGroupMainCurrSelect')?.value || getGlobalMainCurrency();
       const rateInput = document.getElementById('newGroupRateInput');
       if (!foreignCurr || foreignCurr === 'NONE' || foreignCurr === mainC) {
         rateInput.value = 1;
@@ -3337,12 +3679,14 @@
               </div>
             `;
           }
+          const isMe = m.id === 'u_me';
           return `
-            <div class="flex flex-col items-center relative">
-              <div class="w-12 h-12 rounded-full bg-white border-2 border-orange-500 overflow-hidden flex items-center justify-center text-2xl shadow-sm">
+            <div onclick="${isMe ? '' : `openPlaceholderConfigModal(${idx})`}"
+                 class="flex flex-col items-center relative ${isMe ? '' : 'cursor-pointer'}">
+              <div class="w-12 h-12 rounded-full bg-white border-2 ${isMe ? 'border-emerald-500' : 'border-orange-500'} overflow-hidden flex items-center justify-center text-2xl shadow-sm">
                 ${renderAnimalAvatar(m.animal)}
               </div>
-              <span class="text-[10px] font-bold text-slate-800 mt-1">${escapeHTML(m.name)}</span>
+              <span class="text-[10px] font-bold text-slate-800 mt-1 max-w-[64px] truncate">${escapeHTML(m.name)}</span>
             </div>
           `;
         })
@@ -3377,18 +3721,58 @@
     }
 
     let selectedPlaceholderAnimal = 'chick';
+
+    function getAnimalDefaultName(animalId) {
+      const found = RARE_ANIMALS.find((a) => a.id === animalId) || RARE_ANIMALS[0];
+      return found.name;
+    }
+
+    function isDefaultAnimalName(nameStr) {
+      const clean = String(nameStr || '').replace(/\(無App\)/g, '').trim();
+      return !clean || RARE_ANIMALS.some((a) => a.name === clean);
+    }
+
     function openPlaceholderConfigModal(idx) {
       editingPlaceholderIndex = idx;
-      selectedPlaceholderAnimal = 'chick';
-      document.getElementById('placeholderNameInput').value = '';
+      const targetSlot = stagedNewGroupMembers[idx];
+      if (!targetSlot || targetSlot.id === 'u_me') return;
+
+      const removeBtn = document.getElementById('removeStagedMemberBtn');
+      const nameInput = document.getElementById('placeholderNameInput');
+
+      if (targetSlot.isPlaceholder) {
+        const usedAnimals = stagedNewGroupMembers.filter((m) => !m.isPlaceholder).map((m) => m.animal);
+        const unusedAnimal = RARE_ANIMALS.find((a) => !usedAnimals.includes(a.id)) || RARE_ANIMALS[3];
+        selectedPlaceholderAnimal = unusedAnimal.id;
+        nameInput.value = unusedAnimal.name;
+        if (removeBtn) removeBtn.classList.add('hidden');
+      } else {
+        selectedPlaceholderAnimal = targetSlot.animal || 'chick';
+        nameInput.value = String(targetSlot.name || '').replace(/\(無App\)/g, '').trim();
+        if (removeBtn) removeBtn.classList.remove('hidden');
+      }
+
       renderPlaceholderAnimalPicker();
       document.getElementById('configPlaceholderModal').classList.remove('hidden');
+      setTimeout(() => {
+        nameInput.focus();
+        nameInput.select();
+      }, 60);
+    }
+
+    function selectPlaceholderAnimalAndFillName(animalId) {
+      const nameInput = document.getElementById('placeholderNameInput');
+      if (nameInput && isDefaultAnimalName(nameInput.value)) {
+        nameInput.value = getAnimalDefaultName(animalId);
+      }
+      selectedPlaceholderAnimal = animalId;
+      renderPlaceholderAnimalPicker();
     }
 
     function renderPlaceholderAnimalPicker() {
       document.getElementById('placeholderAnimalGrid').innerHTML = RARE_ANIMALS.map(
         (a) => `
-        <button type="button" onclick="selectedPlaceholderAnimal='${a.id}'; renderPlaceholderAnimalPicker();"
+        <button type="button" onclick="selectPlaceholderAnimalAndFillName('${a.id}')"
                 class="p-1.5 rounded-xl border flex flex-col items-center justify-center gap-1 ${
                   selectedPlaceholderAnimal === a.id ? 'border-orange-600 bg-orange-50 ring-2 ring-orange-500/30' : 'border-slate-200 bg-slate-50'
                 }">
@@ -3402,15 +3786,19 @@
     }
 
     function savePlaceholderMemberConfig() {
-      const name = document.getElementById('placeholderNameInput').value.trim();
-      if (!name) return showToast('⚠️ 請輸入這位無 App 團友的暱稱');
+      const rawName = document.getElementById('placeholderNameInput').value.trim();
+      const finalBaseName = rawName || getAnimalDefaultName(selectedPlaceholderAnimal);
 
       if (editingPlaceholderIndex !== null && stagedNewGroupMembers[editingPlaceholderIndex]) {
+        const prev = stagedNewGroupMembers[editingPlaceholderIndex];
+        const wasAppUser = !!prev.isAppUser;
         stagedNewGroupMembers[editingPlaceholderIndex] = {
-          id: 'ghost_' + Date.now(),
-          name: `${name}(無App)`,
+          id: prev.isPlaceholder ? 'ghost_' + Date.now() : prev.id,
+          name: wasAppUser ? finalBaseName : `${finalBaseName}(無App)`,
           animal: selectedPlaceholderAnimal,
-          isAppUser: false,
+          isAppUser: wasAppUser,
+          handle: prev.handle || '',
+          paymentNote: prev.paymentNote || '',
           isPlaceholder: false
         };
       }
@@ -3423,19 +3811,93 @@
       renderCreateGroupModalUI();
     }
 
+    function removeStagedMemberSlot() {
+      if (editingPlaceholderIndex === null) return;
+      const target = stagedNewGroupMembers[editingPlaceholderIndex];
+      if (!target || target.isPlaceholder || target.id === 'u_me') return;
+
+      if (editingGroupId) {
+        const grp = window.appState.groups.find((g) => g.id === editingGroupId);
+        if (grp) {
+          const hasExp = (grp.expenses || []).some(
+            (e) =>
+              e.payerId === target.id ||
+              (e.participants || []).includes(target.id) ||
+              (e.customExtras && Number(e.customExtras[target.id]) > 0)
+          );
+          const hasTopup = (grp.poolTopups || []).some((t) => t.contributor === target.id);
+          if (hasExp || hasTopup) {
+            return showToast(`⚠️「${target.name}」已有消費或公數紀錄，無法直接移除（可改名）`);
+          }
+        }
+      }
+
+      stagedNewGroupMembers.splice(editingPlaceholderIndex, 1);
+      if (!stagedNewGroupMembers.some((m) => m.isPlaceholder)) {
+        addGreyPlaceholderSlot();
+      }
+      closeModal('configPlaceholderModal');
+      renderCreateGroupModalUI();
+      showToast('🗑️ 已從本團名單移除該成員');
+    }
+
     function confirmCreateNewGroup() {
       const name = document.getElementById('newGroupNameInput').value.trim();
-      if (!name) return showToast('⚠️ 請輸入新群組名稱');
+      if (!name) return showToast('⚠️ 請輸入群組名稱');
 
       const finalMembers = stagedNewGroupMembers.filter((m) => !m.isPlaceholder);
       if (finalMembers.length < 2) {
         return showToast('⚠️ 群組至少需要 2 位有效成員');
       }
 
-      const mainC = getGlobalMainCurrency();
+      const mainC = document.getElementById('newGroupMainCurrSelect')?.value || getGlobalMainCurrency();
       const rawForeign = document.getElementById('newGroupCurrencySelect').value;
       const foreignC = rawForeign === 'NONE' ? mainC : rawForeign;
-      const exchangeRate = foreignC === mainC ? 1 : parseFloat(document.getElementById('newGroupRateInput').value) || 1;
+      const exchangeRate =
+        foreignC === mainC ? 1 : parseFloat(document.getElementById('newGroupRateInput').value) || 1;
+
+      if (editingGroupId) {
+        const existingGroup = window.appState.groups.find((g) => g.id === editingGroupId);
+        if (existingGroup) {
+          if (!Array.isArray(existingGroup.deletedMemberIds)) {
+            existingGroup.deletedMemberIds = [];
+          }
+          const newMemberIds = new Set(finalMembers.map((m) => m.id));
+          (existingGroup.members || []).forEach((oldM) => {
+            if (!newMemberIds.has(oldM.id) && oldM.id !== 'u_me') {
+              if (!existingGroup.deletedMemberIds.includes(oldM.id)) {
+                existingGroup.deletedMemberIds.push(oldM.id);
+              }
+              if (oldM.handle && !existingGroup.deletedMemberIds.includes(oldM.handle)) {
+                existingGroup.deletedMemberIds.push(oldM.handle);
+              }
+            }
+          });
+          // 若本次重新加回曾被刪除的成員，從墓碑中解除
+          finalMembers.forEach((curM) => {
+            existingGroup.deletedMemberIds = existingGroup.deletedMemberIds.filter(
+              (delId) => delId !== curM.id && (!curM.handle || delId !== curM.handle)
+            );
+          });
+
+          existingGroup.name = name;
+          existingGroup.mainCurrency = mainC;
+          existingGroup.currency = foreignC;
+          existingGroup.exchangeRate = exchangeRate;
+          existingGroup.members = finalMembers;
+          if (!existingGroup.poolHolderId || !newMemberIds.has(existingGroup.poolHolderId)) {
+            existingGroup.poolHolderId = finalMembers[0].id;
+          }
+          ensureGroupPoolBalances(existingGroup);
+          editingGroupId = null;
+          closeModal('createGroupModal');
+          markAppStateDirty(true);
+          renderAll();
+          showToast(`💾 已更新群組「${name}」設定與成員！`);
+          return;
+        }
+      }
+
       const newGroupId = 'grp_' + crypto.getRandomValues(new Uint32Array(1))[0].toString(16);
 
       window.appState.groups.unshift({
@@ -3444,14 +3906,17 @@
         mainCurrency: mainC,
         currency: foreignC,
         exchangeRate,
+        poolTopups: [],
         poolBalances: {
           [mainC]: 0,
           [foreignC]: 0
         },
         poolBalance: 0,
         includePoolInSettlement: false,
+        poolHolderId: finalMembers[0].id,
         poolContributions: {},
         members: finalMembers,
+        deletedMemberIds: [],
         expenses: [],
         settlementStatus: {}
       });
@@ -3476,19 +3941,40 @@
     // ------------------------------------------------------------------------
     // 11. 通知中心與個人設定（全域主貨幣 + 首次強制雙重設密金庫 + 空白引導）
     // ------------------------------------------------------------------------
+    // [目標 9] 修改預設主貨幣僅套用於「日後新建群組」，絕不竄改現有或過去群組的幣別與歷史紀錄
     function saveGlobalMainCurrency(newMainCurr) {
       if (!newMainCurr) return;
       window.appState.mainCurrency = newMainCurr;
-      const currentGroup = getCurrentGroup();
-      if (currentGroup) {
-        currentGroup.mainCurrency = newMainCurr;
-        const fCurr = getGroupForeignCurrency(currentGroup);
-        currentGroup.exchangeRate = getPairExchangeRate(fCurr, newMainCurr);
-        ensureGroupPoolBalances(currentGroup);
-      }
       markAppStateDirty(true);
-      renderAll();
-      showToast(`🌐 全域結算主貨幣已設為 ${newMainCurr}`);
+      renderSettingsTab();
+      showToast(`🌐 新建群組預設主貨幣已設為 ${newMainCurr}（現有群組歷史紀錄維持不變）`);
+    }
+
+    // [目標 3] 通知中心支援單筆刪除與一鍵清空通知
+    function deleteNotification(notifId) {
+      const list = window.appState.notifications || [];
+      const idx = list.findIndex((n) => n.id === notifId);
+      if (idx === -1) return;
+      list.splice(idx, 1);
+      markAppStateDirty(true);
+      renderNotificationsTab();
+      showToast('🗑️ 已刪除該筆通知');
+    }
+
+    function clearAllNotifications() {
+      const list = window.appState.notifications || [];
+      if (list.length === 0) return showToast('ℹ️ 目前通知中心已經是空的');
+
+      const hasPendingClaim = list.some((n) => n.type === 'payment_claim' && n.status === 'pending');
+      const confirmMsg = hasPendingClaim
+        ? '⚠️ 注意：通知列表內尚有「未確認收妥破鎖」的過數通知！確定要一鍵清空全部通知嗎？'
+        : '確定要一鍵清空所有通知紀錄嗎？';
+
+      if (!window.confirm(confirmMsg)) return;
+      window.appState.notifications = [];
+      markAppStateDirty(true);
+      renderNotificationsTab();
+      showToast('🧹 已清空所有通知紀錄！');
     }
 
     function renderNotificationsTab() {
@@ -3506,53 +3992,52 @@
         .map((n) => {
           if (n.type === 'group_created') {
             return `
-              <div class="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs space-y-1">
-                <div class="font-black text-amber-950">🏕️ 新團成立通知：${escapeHTML(n.groupName)}</div>
-                <div class="text-slate-600">入團成員：${escapeHTML(n.memberNames)}</div>
-                <div class="text-[10px] text-slate-400">${escapeHTML(n.time)}</div>
+              <div class="swipe-item-wrap single-swipe">
+                <div class="swipe-actions-left single-action">
+                  <button onclick="deleteNotification('${escapeHTML(n.id)}')" class="flex-1 bg-rose-600 hover:bg-rose-700 text-white font-black text-xs flex flex-col items-center justify-center gap-0.5">
+                    <span>🗑️</span><span>刪除</span>
+                  </button>
+                </div>
+                <div class="swipe-content-card p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs flex items-start justify-between gap-2">
+                  <div class="space-y-1">
+                    <div class="font-black text-amber-950">🏕️ 新團成立通知：${escapeHTML(n.groupName)}</div>
+                    <div class="text-slate-600">入團成員：${escapeHTML(n.memberNames)}</div>
+                    <div class="text-[10px] text-slate-400">${escapeHTML(n.time)} ｜ 👉 右拉刪除</div>
+                  </div>
+                </div>
               </div>
             `;
           }
 
           const isConfirmed = n.status === 'confirmed';
           return `
-            <div class="p-3 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between">
-              <div class="text-xs space-y-0.5 pr-2">
-                <div class="font-black text-slate-800">💸 ${escapeHTML(n.fromName)} 申告已過數 HK$ ${Number(n.amountHKD).toFixed(2)}</div>
-                <div class="text-[11px] text-slate-500">請核對你的 FPS / PayMe / 銀行戶口是否已收妥</div>
-                <div class="text-[10px] text-slate-400">${escapeHTML(n.time)}</div>
+            <div class="swipe-item-wrap single-swipe">
+              <div class="swipe-actions-left single-action">
+                <button onclick="deleteNotification('${escapeHTML(n.id)}')" class="flex-1 bg-rose-600 hover:bg-rose-700 text-white font-black text-xs flex flex-col items-center justify-center gap-0.5">
+                  <span>🗑️</span><span>刪除</span>
+                </button>
               </div>
-              ${
-                isConfirmed
-                  ? `<span class="text-[11px] font-black text-emerald-600 shrink-0">✅ 已破鎖</span>`
-                  : `<button onclick="creditorConfirmUnlock('${escapeHTML(n.pairKey || n.fromId + '->' + n.toId)}', '${escapeHTML(n.id)}')"
-                             class="bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs px-3 py-2 rounded-xl shrink-0 shadow">
-                       🗡️ 確認收妥破鎖
-                     </button>`
-              }
+              <div class="swipe-content-card p-3 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between gap-2">
+                <div class="text-xs space-y-0.5 pr-1 flex-1">
+                  <div class="font-black text-slate-800">💸 ${escapeHTML(n.fromName)} 申告已過數 HK$ ${Number(n.amountHKD).toFixed(2)}</div>
+                  <div class="text-[11px] text-slate-500">請核對你的 FPS / PayMe / 銀行戶口是否已收妥</div>
+                  <div class="text-[10px] text-slate-400">${escapeHTML(n.time)} ｜ 👉 右拉刪除</div>
+                </div>
+                <div class="flex items-center gap-1.5 shrink-0">
+                  ${
+                    isConfirmed
+                      ? `<span class="text-[11px] font-black text-emerald-600">✅ 已破鎖</span>`
+                      : `<button onclick="creditorConfirmUnlock('${escapeHTML(n.pairKey || n.fromId + '->' + n.toId)}', '${escapeHTML(n.id)}')"
+                                 class="bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs px-2.5 py-1.5 rounded-xl shadow">
+                           🗡️ 確認破鎖
+                         </button>`
+                  }
+                </div>
+              </div>
             </div>
           `;
         })
         .join('');
-    }
-
-    function simulateFriendPayment() {
-      const group = getCurrentGroup();
-      window.appState.notifications.unshift({
-        id: 'notif_' + Date.now(),
-        type: 'payment_claim',
-        pairKey: 'u_manson->u_me',
-        fromId: 'u_manson',
-        fromName: '阿強',
-        toId: 'u_me',
-        amountHKD: 312.0,
-        groupId: group.id,
-        status: 'pending',
-        time: '剛剛'
-      });
-      markAppStateDirty(false);
-      renderAll();
-      showToast('⚡ 已收到阿強的過數確認請求！');
     }
 
     function renderSettingsTab() {
@@ -3602,33 +4087,41 @@
       showToast('✅ 個人暱稱已更新！');
     }
 
+    // [目標 7] 廢除 1234 弱密碼，強制驗證 8 位以上英數混合 + 最少 1 個英文大楷 (A-Z)
+    function checkStrictVaultPassword(pwd) {
+      if (typeof DBCrypto !== 'undefined' && typeof DBCrypto.evaluatePasswordStrength === 'function') {
+        return DBCrypto.evaluatePasswordStrength(pwd);
+      }
+      const s = String(pwd ?? '');
+      const ok = s.length >= 8 && /[A-Z]/.test(s) && /[a-zA-Z]/.test(s) && /[0-9]/.test(s);
+      return {
+        isStrong: ok,
+        recommendation: '密碼須為 8 位以上英數混合，且最少包含 1 個英文大楷 (例如 Abcd1234)'
+      };
+    }
+
     function updatePasswordStrengthUI(pwd) {
       const banner = document.getElementById('vaultPasswordStrengthBanner');
       if (!banner) return;
-      const isStrong =
-        typeof DBCrypto !== 'undefined' && typeof DBCrypto.evaluatePasswordStrength === 'function'
-          ? DBCrypto.evaluatePasswordStrength(pwd).isStrong
-          : String(pwd).length >= 8 && /[A-Za-z]/.test(pwd) && /\d/.test(pwd);
+      const evalRes = checkStrictVaultPassword(pwd);
 
       banner.classList.remove('hidden');
-      if (isStrong) {
+      if (evalRes.isStrong) {
         banner.className = 'p-2 rounded-xl text-[11px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200';
-        banner.textContent = '🛡️ 金庫密碼強度良好（已受 600,000 次 PBKDF2 + AES-GCM 保護）';
+        banner.textContent = '🛡️ 金庫密碼符合高強度規範（8位以上英數混合且含大楷英文，受 600,000 次 PBKDF2 保護）';
       } else {
         banner.className = 'p-2 rounded-xl text-[11px] font-bold bg-amber-50 text-amber-900 border border-amber-300';
-        banner.textContent = '⚠️ 資安建議：建議設定 8 位以上英數混合密碼，以防止備份檔遭離線暴力破解。';
+        banner.textContent = `⚠️ ${evalRes.recommendation}`;
       }
     }
 
-    /**
-     * [v7.3 新增] 首次啟用收款金庫：強制設定新密碼與重複輸入確認，並保持所有收款欄位空白引導
-     */
     async function handleSetupNewVaultPassword() {
       const p1 = document.getElementById('vaultInitPwd1').value;
       const p2 = document.getElementById('vaultInitPwd2').value;
 
-      if (!p1 || p1.length < 4) {
-        return showToast('⚠️ 金庫密碼至少需要 4 位字元（建議 8 位英數混合）');
+      const strength = checkStrictVaultPassword(p1);
+      if (!strength.isStrong) {
+        return showToast(`⚠️ ${strength.recommendation}`);
       }
       if (p1 !== p2) {
         return showToast('❌ 兩次輸入的新密碼不一致，請重新確認！');
@@ -3663,9 +4156,9 @@
       await refreshVaultSetupStatus();
       updatePasswordStrengthUI(p1);
       document.getElementById('vaultLockBadge').textContent = '🔓 已透過 AES-GCM 解密';
-      document.getElementById('vaultLockBadge').className = 'text-[11px] bg-emerald-100 text-emerald-800 font-bold px-2.5 py-1 rounded-full';
+      document.getElementById('vaultLockBadge').className = 'text-xs bg-emerald-100 text-emerald-800 font-black px-3.5 py-1.5 rounded-full shrink-0 whitespace-nowrap shadow-sm';
       document.getElementById('vaultFormContainer').classList.remove('hidden');
-      showToast('🔐 已成功設定專屬金庫密碼！請填寫你的收款資料並儲存');
+      showToast('🔐 已成功設定高強度金庫密碼！請填寫你的收款資料並儲存');
     }
 
     async function handleUnlockVault() {
@@ -3703,11 +4196,11 @@
         await refreshVaultSetupStatus();
         updatePasswordStrengthUI(pwd);
         document.getElementById('vaultLockBadge').textContent = '🔓 已透過 AES-GCM 解密';
-        document.getElementById('vaultLockBadge').className = 'text-[11px] bg-emerald-100 text-emerald-800 font-bold px-2.5 py-1 rounded-full';
+        document.getElementById('vaultLockBadge').className = 'text-xs bg-emerald-100 text-emerald-800 font-black px-3.5 py-1.5 rounded-full shrink-0 whitespace-nowrap shadow-sm';
         document.getElementById('vaultFormContainer').classList.remove('hidden');
         showToast('🔓 金庫已透過 PBKDF2 + AES-GCM 解鎖！');
       } catch (err) {
-        if (err && err.message && err.message.includes('嘗試次數過多')) {
+        if (err && err.message && err.message.includes('過多')) {
           showToast(`⏳ ${err.message}`);
         } else {
           showToast('❌ 金庫密碼錯誤，AES-GCM 拒絕解密！');
@@ -3721,6 +4214,11 @@
 
       const pwd = document.getElementById('vaultNewPasswordInput').value.trim() || currentUnlockedVaultPassword;
       if (!pwd) return showToast('⚠️ 請先解鎖金庫');
+
+      const strCheck = checkStrictVaultPassword(pwd);
+      if (!strCheck.isStrong) {
+        return showToast(`⚠️ ${strCheck.recommendation}`);
+      }
 
       const saved = await DBCrypto.saveEncryptedQRBlob('my_private_qr_blob', file, pwd);
       const decryptedUrl = await DBCrypto.loadEncryptedQRBlobURL('my_private_qr_blob', pwd);
@@ -3756,12 +4254,18 @@
       const newPwd2 = document.getElementById('vaultNewPasswordConfirmInput').value.trim();
 
       if (newPwd1 || newPwd2) {
-        if (newPwd1.length < 4) return showToast('⚠️ 新金庫密碼至少需要 4 位字元');
+        const strCheck = checkStrictVaultPassword(newPwd1);
+        if (!strCheck.isStrong) return showToast(`⚠️ ${strCheck.recommendation}`);
         if (newPwd1 !== newPwd2) return showToast('❌ 兩次輸入的新密碼不一致，請重新確認！');
       }
 
       const targetPassword = newPwd1 || currentUnlockedVaultPassword;
       if (!targetPassword) return showToast('⚠️ 請先解鎖或設定金庫密碼');
+
+      const targetCheck = checkStrictVaultPassword(targetPassword);
+      if (!targetCheck.isStrong) {
+        return showToast(`⚠️ 請於下方設定新密碼（${targetCheck.recommendation}）`);
+      }
 
       const payload = {
         fpsId: document.getElementById('vaultFpsInput').value.trim(),
@@ -3823,7 +4327,7 @@
           window.appState = res.restoredState;
           if (!window.appState.mainCurrency) window.appState.mainCurrency = 'HKD';
           if (!Array.isArray(window.appState.confirmedFriends)) {
-            window.appState.confirmedFriends = [...DEFAULT_CONFIRMED_FRIENDS];
+            window.appState.confirmedFriends = [];
           }
           await refreshVaultSetupStatus();
           renderAll();
@@ -3834,6 +4338,7 @@
       }
     }
 
+    // [目標 5] 公數資金池：每次注資獨立記錄、總數呈現、查看明細並支援單筆修改與刪除
     function selectPoolTopupCurrency(curr) {
       selectedPoolTopupCurrency = curr;
       const group = getCurrentGroup();
@@ -3855,54 +4360,202 @@
       document.getElementById('poolModalCurrency').textContent = selectedPoolTopupCurrency;
     }
 
-    function openPoolTopupModal() {
+    let reopenPoolHistoryAfterEdit = false;
+
+    function openPoolTopupModal(topupIdToEdit = null) {
+      const historyModal = document.getElementById('poolHistoryModal');
+      reopenPoolHistoryAfterEdit = historyModal && !historyModal.classList.contains('hidden');
+      if (reopenPoolHistoryAfterEdit) {
+        closeModal('poolHistoryModal');
+      }
+
       const group = getCurrentGroup();
       const foreignC = getGroupForeignCurrency(group);
-      selectPoolTopupCurrency(foreignC);
+      ensureGroupPoolBalances(group);
+
+      editingPoolTopupId = topupIdToEdit || null;
+      const existingTopup = editingPoolTopupId
+        ? (group.poolTopups || []).find((t) => t.id === editingPoolTopupId)
+        : null;
+
+      document.getElementById('poolTopupModalTitle').textContent = existingTopup
+        ? '✏️ 修改公數注資紀錄'
+        : '💰 注資公數資金池';
+      document.getElementById('poolTopupSubmitBtn').textContent = existingTopup
+        ? '💾 儲存公數修改'
+        : '✅ 確認儲存公數注資';
+
+      selectPoolTopupCurrency(existingTopup ? existingTopup.currency || foreignC : foreignC);
+
+      document.getElementById('poolTopupAmountInput').value = existingTopup ? existingTopup.amount : '';
+      const dateInput = document.getElementById('poolTopupDateInput');
+      if (dateInput) {
+        dateInput.value = existingTopup
+          ? existingTopup.date
+          : new Date().toISOString().slice(0, 10);
+      }
+      const noteInput = document.getElementById('poolTopupNoteInput');
+      if (noteInput) {
+        noteInput.value = existingTopup ? existingTopup.note || '' : '';
+      }
 
       const sel = document.getElementById('poolContributorSelect');
       if (sel) {
+        const currentContrib = existingTopup ? existingTopup.contributor || 'ALL' : 'ALL';
         sel.innerHTML =
-          `<option value="ALL">👥 全員平均夾錢注資 (每人平分)</option>` +
-          group.members.map((m) => `<option value="${m.id}">👤 由 ${escapeHTML(m.name)} 單獨出資</option>`).join('');
+          `<option value="ALL" ${currentContrib === 'ALL' ? 'selected' : ''}>👥 全員平均夾錢注資 (每人平分)</option>` +
+          group.members
+            .map(
+              (m) =>
+                `<option value="${m.id}" ${currentContrib === m.id ? 'selected' : ''}>👤 由 ${escapeHTML(m.name)} 單獨出資</option>`
+            )
+            .join('');
       }
       document.getElementById('poolTopupModal').classList.remove('hidden');
     }
 
     function confirmPoolTopup() {
       const amt = parseFloat(document.getElementById('poolTopupAmountInput').value);
-      if (isNaN(amt) || amt <= 0) return;
+      if (isNaN(amt) || amt <= 0) return showToast('⚠️ 請輸入大於 0 的注資金額');
+
       const group = getCurrentGroup();
       const mainC = getGroupMainCurrency(group);
       const foreignC = getGroupForeignCurrency(group);
-      const poolBals = ensureGroupPoolBalances(group);
+      ensureGroupPoolBalances(group);
+
       const topupCurr = selectedPoolTopupCurrency || foreignC;
       const contributor = document.getElementById('poolContributorSelect')?.value || 'ALL';
+      const dateVal = document.getElementById('poolTopupDateInput')?.value || new Date().toISOString().slice(0, 10);
+      const noteVal = document.getElementById('poolTopupNoteInput')?.value.trim() || '';
+      const rateSnap = topupCurr === mainC ? 1 : Number(group.exchangeRate) || 1;
 
-      poolBals[topupCurr] = (Number(poolBals[topupCurr]) || 0) + amt;
-      group.poolBalance = poolBals[foreignC];
-
-      if (!group.poolContributions || typeof group.poolContributions !== 'object') {
-        group.poolContributions = {};
-      }
-
-      // 以主貨幣價值記錄出資權重，確保雙幣注資時退還比例公平
-      const rateToMain = topupCurr === mainC ? 1 : Number(group.exchangeRate) || 1;
-      const valueInMain = amt * rateToMain;
-
-      if (contributor === 'ALL' && group.members.length > 0) {
-        const perMember = valueInMain / group.members.length;
-        group.members.forEach((m) => {
-          group.poolContributions[m.id] = (Number(group.poolContributions[m.id]) || 0) + perMember;
-        });
+      if (editingPoolTopupId) {
+        const target = (group.poolTopups || []).find((t) => t.id === editingPoolTopupId);
+        if (target) {
+          target.amount = amt;
+          target.currency = topupCurr;
+          target.contributor = contributor;
+          target.date = dateVal;
+          target.note = noteVal;
+          target.rateAtCreation = rateSnap;
+          target.updatedAt = Date.now();
+        }
       } else {
-        group.poolContributions[contributor] = (Number(group.poolContributions[contributor]) || 0) + valueInMain;
+        group.poolTopups.push({
+          id: 'topup_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+          date: dateVal,
+          currency: topupCurr,
+          amount: amt,
+          rateAtCreation: rateSnap,
+          contributor,
+          note: noteVal,
+          updatedAt: Date.now()
+        });
       }
 
+      const shouldReopenHistory = reopenPoolHistoryAfterEdit;
+      reopenPoolHistoryAfterEdit = false;
+      editingPoolTopupId = null;
+      ensureGroupPoolBalances(group);
       closeModal('poolTopupModal');
       markAppStateDirty(true);
       renderAll();
-      showToast(`💰 已向 ${topupCurr} 公數資金池注資 ${topupCurr} ${amt.toLocaleString()}`);
+      if (shouldReopenHistory) {
+        openPoolHistoryModal();
+      }
+      showToast(`💰 已儲存公數注資：${topupCurr} ${amt.toLocaleString()}`);
+    }
+
+    function openPoolHistoryModal() {
+      renderPoolHistoryList();
+      document.getElementById('poolHistoryModal').classList.remove('hidden');
+    }
+
+    function renderPoolHistoryList() {
+      const group = getCurrentGroup();
+      const mainC = getGroupMainCurrency(group);
+      const foreignC = getGroupForeignCurrency(group);
+      const rate = Number(group.exchangeRate) || 1;
+      const poolBals = ensureGroupPoolBalances(group);
+      const memberMap = Object.fromEntries(group.members.map((m) => [m.id, m.name]));
+
+      const summaryEl = document.getElementById('poolHistorySummaryBanner');
+      if (summaryEl) {
+        const fBal = Number(poolBals[foreignC]) || 0;
+        const mBal = Number(poolBals[mainC]) || 0;
+        const totalInMain = mBal + (foreignC !== mainC ? fBal * rate : 0);
+        summaryEl.textContent =
+          foreignC === mainC
+            ? `💰 目前公數池可用總結餘：${mainC} ${mBal.toLocaleString()}（共 ${(group.poolTopups || []).length} 筆注資）`
+            : `💰 可用結餘：${foreignC} ${fBal.toLocaleString()} ＋ ${mainC} ${mBal.toLocaleString()}（共折合 ${mainC} ${totalInMain.toFixed(2)}）`;
+      }
+
+      const listEl = document.getElementById('poolHistoryListContainer');
+      const topups = group.poolTopups || [];
+      if (topups.length === 0) {
+        listEl.innerHTML = `<div class="text-xs text-slate-400 text-center py-6 bg-slate-50 rounded-xl border border-dashed border-slate-300">尚無公數注資紀錄，點擊下方按鈕即可新增第一筆公數！</div>`;
+        return;
+      }
+
+      listEl.innerHTML = topups
+        .slice()
+        .reverse()
+        .map((t) => {
+          const tCurr = t.currency || foreignC;
+          const tAmt = Number(t.amount) || 0;
+          const tRate = tCurr === mainC ? 1 : Number(t.rateAtCreation) || rate;
+          const tMain = tAmt * tRate;
+          const contribText =
+            t.contributor === 'ALL'
+              ? '👥 全員平均夾錢'
+              : `👤 ${memberMap[t.contributor] || t.contributor} 單獨出資`;
+          return `
+            <div class="swipe-item-wrap">
+              <div class="swipe-actions-left">
+                <button onclick="openPoolTopupModal('${escapeHTML(t.id)}')" class="flex-1 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs flex flex-col items-center justify-center gap-0.5">
+                  <span>✏️</span><span>修改</span>
+                </button>
+                <button onclick="deletePoolTopup('${escapeHTML(t.id)}')" class="flex-1 bg-rose-600 hover:bg-rose-700 text-white font-black text-xs flex flex-col items-center justify-center gap-0.5">
+                  <span>🗑️</span><span>刪除</span>
+                </button>
+              </div>
+              <div class="swipe-content-card p-3 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between gap-2">
+                <div class="text-xs space-y-0.5 min-w-0 flex-1">
+                  <div class="flex items-center gap-1.5">
+                    <span class="text-[10px] font-bold bg-white border border-slate-200 text-slate-600 px-1.5 py-0.5 rounded">${escapeHTML(t.date || '')}</span>
+                    <span class="text-[10px] font-bold bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded">${escapeHTML(contribText)}</span>
+                  </div>
+                  <div class="font-black text-sm text-slate-900 mt-0.5">${escapeHTML(tCurr)} ${tAmt.toLocaleString()}</div>
+                  ${t.note ? `<div class="text-[11px] text-slate-500 truncate">備註：${escapeHTML(t.note)}</div>` : ''}
+                </div>
+                <div class="text-right shrink-0">
+                  <div class="text-xs font-black text-orange-600">折合 ${escapeHTML(mainC)} ${tMain.toFixed(2)}</div>
+                  <div class="text-[9px] text-slate-400 mt-1">👉 右拉修改/刪除</div>
+                </div>
+              </div>
+            </div>
+          `;
+        })
+        .join('');
+    }
+
+    function deletePoolTopup(topupId) {
+      const group = getCurrentGroup();
+      const list = group.poolTopups || [];
+      const idx = list.findIndex((t) => t.id === topupId);
+      if (idx === -1) return;
+      const target = list[idx];
+      if (!window.confirm(`確定要刪除這筆「${target.currency} ${target.amount}」的公數注資紀錄嗎？`)) {
+        return;
+      }
+      if (!Array.isArray(group.deletedTopupIds)) group.deletedTopupIds = [];
+      if (!group.deletedTopupIds.includes(topupId)) group.deletedTopupIds.push(topupId);
+      list.splice(idx, 1);
+      ensureGroupPoolBalances(group);
+      markAppStateDirty(true);
+      renderAll();
+      renderPoolHistoryList();
+      showToast('🗑️ 已刪除該筆公數注資紀錄並重新計算結餘');
     }
 
     function switchTab(tabName) {
@@ -3941,6 +4594,611 @@
       if (toastTimer) clearTimeout(toastTimer);
       toastTimer = setTimeout(() => banner.classList.add('hidden'), 2800);
     }
+
+    // ========================================================================
+    // 12. [v7.4 新增] 系統級藍牙 AirDrop / Quick Share + #sync= 零留痕增量同步引擎
+    // ========================================================================
+    function toUrlSafeBase64(obj) {
+      const jsonStr = JSON.stringify(obj);
+      const b64 = btoa(unescape(encodeURIComponent(jsonStr)));
+      return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+
+    function fromUrlSafeBase64(b64Url) {
+      let b64 = String(b64Url || '').trim().replace(/-/g, '+').replace(/_/g, '/');
+      while (b64.length % 4 !== 0) b64 += '=';
+      const jsonStr = decodeURIComponent(escape(atob(b64)));
+      return JSON.parse(jsonStr);
+    }
+
+    /**
+     * 將當前群組打包為極精簡之鍵值結構 (剔除單據 Blob，保留所有帳單、公數、刪除墓碑與收款 FPS 備註)
+     */
+    function buildCompactGroupSyncPacket(group, attachMyFps = '') {
+      const meId = window.appState.currentUser.id;
+      const myHandle = window.appState.currentUser.handle || myPrivateInviteCode;
+
+      const compactMembers = (group.members || []).map((m) => {
+        const isMe = m.id === meId || (m.handle && m.handle === myHandle);
+        const note = isMe && attachMyFps ? attachMyFps : (m.paymentNote || '');
+        return [
+          m.id === meId ? myHandle : m.id,
+          m.name,
+          m.animal || 'fox',
+          m.isAppUser ? 1 : 0,
+          m.handle || (isMe ? myHandle : ''),
+          note
+        ];
+      });
+
+      const mapMemberRef = (id) => (id === meId ? myHandle : id);
+
+      const compactExpenses = (group.expenses || []).map((e) => {
+        const mappedExtras = {};
+        if (e.customExtras && typeof e.customExtras === 'object') {
+          Object.entries(e.customExtras).forEach(([k, v]) => {
+            if (Number(v) > 0) mappedExtras[mapMemberRef(k)] = Number(v);
+          });
+        }
+        return [
+          e.id,
+          e.title,
+          Number(e.amount) || 0,
+          e.currency || group.currency || 'HKD',
+          Number(e.rateAtCreation) || 1,
+          e.date || '',
+          e.paidByPool ? 'POOL' : mapMemberRef(e.payerId),
+          e.paidByPool ? 1 : 0,
+          (e.participants || []).map(mapMemberRef),
+          mappedExtras,
+          e.updatedAt || 0
+        ];
+      });
+
+      const compactTopups = (group.poolTopups || []).map((t) => [
+        t.id,
+        t.date || '',
+        t.currency || group.currency || 'HKD',
+        Number(t.amount) || 0,
+        Number(t.rateAtCreation) || 1,
+        t.contributor === 'ALL' ? 'ALL' : mapMemberRef(t.contributor),
+        t.note || '',
+        t.updatedAt || 0
+      ]);
+
+      const mappedSettlementStatus = {};
+      if (group.settlementStatus && typeof group.settlementStatus === 'object') {
+        Object.entries(group.settlementStatus).forEach(([pairKey, status]) => {
+          const [fromId, toId] = pairKey.split('->');
+          if (fromId && toId) {
+            mappedSettlementStatus[`${mapMemberRef(fromId)}->${mapMemberRef(toId)}`] = status;
+          }
+        });
+      }
+
+      const holderRaw =
+        group.poolHolderId || (group.members && group.members[0] ? group.members[0].id : meId);
+
+      return {
+        v: 74,
+        s: window.appState.currentUser.name,
+        g: {
+          id: group.id,
+          n: group.name,
+          mc: getGroupMainCurrency(group),
+          fc: getGroupForeignCurrency(group),
+          r: Number(group.exchangeRate) || 1,
+          ip: group.includePoolInSettlement ? 1 : 0,
+          ph: mapMemberRef(holderRaw),
+          m: compactMembers,
+          e: compactExpenses,
+          t: compactTopups,
+          dm: (group.deletedMemberIds || []).slice(-40),
+          de: (group.deletedExpenseIds || []).slice(-50),
+          dt: (group.deletedTopupIds || []).slice(-50),
+          ss: mappedSettlementStatus
+        }
+      };
+    }
+
+    function buildCurrentGroupSyncUrl() {
+      const group = getCurrentGroup();
+      const includeFps = document.getElementById('syncIncludeMyFpsChk')?.checked;
+      const fpsVal = includeFps
+        ? (document.getElementById('syncMyFpsQuickInput')?.value || '').trim()
+        : '';
+
+      if (includeFps && fpsVal) {
+        const meMember = group.members.find((m) => m.id === 'u_me');
+        if (meMember) meMember.paymentNote = fpsVal;
+      }
+
+      const packet = buildCompactGroupSyncPacket(group, fpsVal);
+      const encoded = toUrlSafeBase64(packet);
+      return `${window.location.origin}${window.location.pathname}#sync=${encoded}`;
+    }
+
+    function openGroupSyncModal() {
+      const group = getCurrentGroup();
+      const meMember = group.members.find((m) => m.id === 'u_me');
+      const defaultFps =
+        (unlockedVaultCache && unlockedVaultCache.fpsId) ||
+        (meMember && meMember.paymentNote) ||
+        '';
+
+      const fpsInput = document.getElementById('syncMyFpsQuickInput');
+      if (fpsInput && !fpsInput.value && defaultFps) {
+        fpsInput.value = defaultFps;
+      }
+
+      document.getElementById('manualSyncPasteInput').value = '';
+      refreshGroupSyncModalPayload();
+      document.getElementById('groupSyncModal').classList.remove('hidden');
+    }
+
+    function refreshGroupSyncModalPayload() {
+      const syncUrl = buildCurrentGroupSyncUrl();
+      const qrImg = document.getElementById('groupSyncQrImg');
+      const qrHint = document.getElementById('groupSyncQrHint');
+
+      if (syncUrl.length <= 510) {
+        const qrDataUrl = LocalQR.toDataURL(syncUrl);
+        if (qrDataUrl) {
+          qrImg.src = qrDataUrl;
+          qrImg.classList.remove('hidden');
+          qrHint.textContent = '支援 iOS / Android 原生相機一掃即自動合併帳目';
+          return;
+        }
+      }
+      qrImg.classList.add('hidden');
+      qrHint.textContent = '💡 本團帳單筆數較多，超過單張 QR 容量上限，請直接點上方「📲 喚起藍牙 AirDrop / WhatsApp 傳送」！';
+    }
+
+    async function triggerQuickShareSync() {
+      const group = getCurrentGroup();
+      const syncUrl = buildCurrentGroupSyncUrl();
+      const banner = document.getElementById('unsyncedChangesBanner');
+      if (banner) banner.classList.add('hidden');
+
+      const shareText = `🔄 【混賬同團同步】「${group.name}」最新帳目與公數明細（點擊連結即自動合併入你手機，零伺服器留痕）：`;
+      if (navigator.share) {
+        try {
+          await navigator.share({
+            title: `${group.name} — 混賬同步`,
+            text: shareText,
+            url: syncUrl
+          });
+          showToast('📲 已喚起系統分享（可選藍牙 AirDrop / Quick Share 或 WhatsApp）！');
+          return;
+        } catch (err) {
+          if (err && err.name === 'AbortError') return;
+        }
+      }
+      await navigator.clipboard.writeText(`${shareText}\n${syncUrl}`);
+      showToast('📋 已複製同團同步連結！請貼至 WhatsApp 群組或透過 AirDrop 傳送');
+    }
+
+    async function copyGroupSyncLink() {
+      const syncUrl = buildCurrentGroupSyncUrl();
+      const banner = document.getElementById('unsyncedChangesBanner');
+      if (banner) banner.classList.add('hidden');
+      await navigator.clipboard.writeText(syncUrl);
+      showToast('📋 已複製 #sync= 同團同步連結！');
+    }
+
+    function handleManualPasteSync() {
+      const raw = document.getElementById('manualSyncPasteInput').value.trim();
+      if (!raw) return showToast('⚠️ 請先貼上同步連結或同步碼');
+      const match = raw.match(/#sync=([A-Za-z0-9_-]+)/);
+      const code = match ? match[1] : raw.replace(/^.*sync=/, '');
+      const ok = applyIncomingGroupSyncEncoded(code);
+      if (ok) closeModal('groupSyncModal');
+    }
+
+    function checkAndProcessUrlHashSync() {
+      const hash = window.location.hash || '';
+      if (!hash) return;
+
+      if (hash.startsWith('#sync=')) {
+        const encoded = decodeURIComponent(hash.slice(6));
+        window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
+        applyIncomingGroupSyncEncoded(encoded);
+      } else if (hash.startsWith('#claim=')) {
+        const encoded = decodeURIComponent(hash.slice(7));
+        window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
+        handleIncomingSyncClaim(encoded);
+      }
+    }
+
+    /**
+     * CRDT-lite 無衝突增量合併：自動對應本人 ID ('u_me')、合併成員、帳單、公數、刪除紀錄與破鎖狀態
+     */
+    function applyIncomingGroupSyncEncoded(encodedStr) {
+      try {
+        const packet = fromUrlSafeBase64(encodedStr);
+        if (!packet || !packet.g || !packet.g.id) {
+          throw new Error('同步封包結構無效');
+        }
+
+        const gIn = packet.g;
+        const senderName = String(packet.s || '團友').slice(0, 32);
+        const myHandle = window.appState.currentUser.handle || myPrivateInviteCode;
+
+        // 若接收端團友的編號正好等於本機邀請碼，自動映射回本機的 'u_me'
+        const resolveLocalMemberId = (incomingId, incomingHandle) => {
+          if (incomingId === myHandle || (incomingHandle && incomingHandle === myHandle)) {
+            return 'u_me';
+          }
+          return String(incomingId).slice(0, 40);
+        };
+
+        let targetGroup = window.appState.groups.find((g) => g.id === gIn.id);
+        let isNewGroup = false;
+
+        if (!targetGroup) {
+          isNewGroup = true;
+          targetGroup = {
+            id: String(gIn.id).slice(0, 40),
+            name: String(gIn.n || '未命名同步群組').slice(0, 60),
+            mainCurrency: String(gIn.mc || 'HKD').slice(0, 8),
+            currency: String(gIn.fc || 'JPY').slice(0, 8),
+            exchangeRate: Number(gIn.r) || 1,
+            includePoolInSettlement: !!gIn.ip,
+            poolTopups: [],
+            poolBalances: {},
+            poolBalance: 0,
+            poolContributions: {},
+            members: [
+              {
+                id: 'u_me',
+                name: window.appState.currentUser.name,
+                animal: window.appState.currentUser.animal,
+                handle: myHandle,
+                isAppUser: true
+              }
+            ],
+            poolHolderId: gIn.ph ? resolveLocalMemberId(gIn.ph, gIn.ph) : 'u_me',
+            deletedMemberIds: [],
+            expenses: [],
+            deletedExpenseIds: [],
+            deletedTopupIds: [],
+            settlementStatus: {}
+          };
+          window.appState.groups.unshift(targetGroup);
+        } else {
+          targetGroup.exchangeRate = Number(gIn.r) || targetGroup.exchangeRate;
+          if (gIn.ip !== undefined) targetGroup.includePoolInSettlement = !!gIn.ip;
+          if (gIn.ph) targetGroup.poolHolderId = resolveLocalMemberId(gIn.ph, gIn.ph);
+        }
+
+        // 1. 合併成員名單與 FPS 收款備註 (paymentNote)
+        if (Array.isArray(gIn.m)) {
+          gIn.m.forEach((arr) => {
+            const [rawId, rawName, rawAnimal, rawIsApp, rawHandle, rawNote] = arr;
+            const localId = resolveLocalMemberId(rawId, rawHandle);
+            const cleanNote = String(rawNote || '').slice(0, 64);
+            const existingM = targetGroup.members.find(
+              (m) => m.id === localId || (rawHandle && m.handle === rawHandle)
+            );
+            if (existingM) {
+              if (localId !== 'u_me') {
+                existingM.name = String(rawName || existingM.name).slice(0, 32);
+                existingM.animal = String(rawAnimal || existingM.animal).slice(0, 16);
+                if (rawIsApp) existingM.isAppUser = true;
+              }
+              if (rawHandle) existingM.handle = String(rawHandle).slice(0, 24);
+              if (cleanNote) existingM.paymentNote = cleanNote;
+            } else {
+              targetGroup.members.push({
+                id: localId,
+                name: String(rawName || '團友').slice(0, 32),
+                animal: String(rawAnimal || 'fox').slice(0, 16),
+                isAppUser: !!rawIsApp,
+                handle: String(rawHandle || '').slice(0, 24),
+                paymentNote: cleanNote
+              });
+            }
+          });
+        }
+
+        // 2. 合併刪除墓碑 (Deleted IDs)
+        if (!Array.isArray(targetGroup.deletedExpenseIds)) targetGroup.deletedExpenseIds = [];
+        if (!Array.isArray(targetGroup.deletedTopupIds)) targetGroup.deletedTopupIds = [];
+
+        (gIn.de || []).forEach((delId) => {
+          if (!targetGroup.deletedExpenseIds.includes(delId)) {
+            targetGroup.deletedExpenseIds.push(delId);
+          }
+        });
+        (gIn.dt || []).forEach((delId) => {
+          if (!targetGroup.deletedTopupIds.includes(delId)) {
+            targetGroup.deletedTopupIds.push(delId);
+          }
+        });
+
+        targetGroup.expenses = (targetGroup.expenses || []).filter(
+          (e) => !targetGroup.deletedExpenseIds.includes(e.id)
+        );
+        targetGroup.poolTopups = (targetGroup.poolTopups || []).filter(
+          (t) => !targetGroup.deletedTopupIds.includes(t.id)
+        );
+
+        // 3. 合併消費帳單 (Expenses)
+        let addedExpCount = 0;
+        let updatedExpCount = 0;
+
+        if (Array.isArray(gIn.e)) {
+          gIn.e.forEach((arr) => {
+            const [id, title, amt, curr, rateSnap, date, payerRaw, paidByPool, partsRaw, extrasRaw, updatedAt] = arr;
+            if (!id || targetGroup.deletedExpenseIds.includes(id)) return;
+
+            const mappedPayer = paidByPool ? 'POOL' : resolveLocalMemberId(payerRaw, payerRaw);
+            const mappedParts = Array.isArray(partsRaw)
+              ? partsRaw.map((pid) => resolveLocalMemberId(pid, pid))
+              : targetGroup.members.map((m) => m.id);
+
+            const mappedExtras = {};
+            if (extrasRaw && typeof extrasRaw === 'object') {
+              Object.entries(extrasRaw).forEach(([k, v]) => {
+                const numV = Number(v) || 0;
+                if (numV > 0) mappedExtras[resolveLocalMemberId(k, k)] = numV;
+              });
+            }
+
+            const existingExp = targetGroup.expenses.find((x) => x.id === id);
+            if (!existingExp) {
+              targetGroup.expenses.push({
+                id: String(id).slice(0, 48),
+                title: String(title || '消費').slice(0, 60),
+                amount: Number(amt) || 0,
+                currency: String(curr || targetGroup.currency).slice(0, 8),
+                rateAtCreation: Number(rateSnap) || 1,
+                date: String(date || '').slice(0, 12),
+                payerId: mappedPayer,
+                paidByPool: !!paidByPool,
+                participants: mappedParts,
+                customExtras: mappedExtras,
+                receiptId: null,
+                receiptSizeKB: 0,
+                updatedAt: Number(updatedAt) || Date.now()
+              });
+              addedExpCount++;
+            } else if ((Number(updatedAt) || 0) > (Number(existingExp.updatedAt) || 0)) {
+              existingExp.title = String(title || existingExp.title).slice(0, 60);
+              existingExp.amount = Number(amt) || 0;
+              existingExp.currency = String(curr || existingExp.currency).slice(0, 8);
+              existingExp.rateAtCreation = Number(rateSnap) || 1;
+              existingExp.date = String(date || existingExp.date).slice(0, 12);
+              existingExp.payerId = mappedPayer;
+              existingExp.paidByPool = !!paidByPool;
+              existingExp.participants = mappedParts;
+              existingExp.customExtras = mappedExtras;
+              existingExp.updatedAt = Number(updatedAt);
+              updatedExpCount++;
+            }
+          });
+        }
+
+        // 4. 合併公數注資明細 (Pool Topups)
+        let addedTopupCount = 0;
+        if (Array.isArray(gIn.t)) {
+          gIn.t.forEach((arr) => {
+            const [id, date, curr, amt, rateSnap, contribRaw, note, updatedAt] = arr;
+            if (!id || targetGroup.deletedTopupIds.includes(id)) return;
+
+            const mappedContrib =
+              contribRaw === 'ALL' ? 'ALL' : resolveLocalMemberId(contribRaw, contribRaw);
+            const existingTopup = targetGroup.poolTopups.find((x) => x.id === id);
+
+            if (!existingTopup) {
+              targetGroup.poolTopups.push({
+                id: String(id).slice(0, 48),
+                date: String(date || '').slice(0, 12),
+                currency: String(curr || targetGroup.currency).slice(0, 8),
+                amount: Number(amt) || 0,
+                rateAtCreation: Number(rateSnap) || 1,
+                contributor: mappedContrib,
+                note: String(note || '').slice(0, 60),
+                updatedAt: Number(updatedAt) || Date.now()
+              });
+              addedTopupCount++;
+            } else if ((Number(updatedAt) || 0) > (Number(existingTopup.updatedAt) || 0)) {
+              existingTopup.date = String(date || existingTopup.date).slice(0, 12);
+              existingTopup.currency = String(curr || existingTopup.currency).slice(0, 8);
+              existingTopup.amount = Number(amt) || 0;
+              existingTopup.rateAtCreation = Number(rateSnap) || 1;
+              existingTopup.contributor = mappedContrib;
+              existingTopup.note = String(note || '').slice(0, 60);
+              existingTopup.updatedAt = Number(updatedAt);
+            }
+          });
+        }
+
+        // 5. 合併過數破鎖狀態 (confirmed > pending_confirm > due)
+        if (!targetGroup.settlementStatus) targetGroup.settlementStatus = {};
+        if (gIn.ss && typeof gIn.ss === 'object') {
+          const rank = { due: 0, pending_confirm: 1, confirmed: 2 };
+          Object.entries(gIn.ss).forEach(([rawPair, status]) => {
+            const [fRaw, tRaw] = rawPair.split('->');
+            if (!fRaw || !tRaw) return;
+            const localPair = `${resolveLocalMemberId(fRaw, fRaw)}->${resolveLocalMemberId(tRaw, tRaw)}`;
+            const curStatus = targetGroup.settlementStatus[localPair] || 'due';
+            if ((rank[status] || 0) > (rank[curStatus] || 0)) {
+              targetGroup.settlementStatus[localPair] = status;
+            }
+          });
+        }
+
+        // 6. 合併已刪除成員墓碑 (deletedMemberIds) 並執行「帳目安全鎖」過濾
+        if (!Array.isArray(targetGroup.deletedMemberIds)) targetGroup.deletedMemberIds = [];
+        (gIn.dm || []).forEach((rawDelMemberId) => {
+          const localDelId = resolveLocalMemberId(rawDelMemberId, rawDelMemberId);
+          if (localDelId !== 'u_me' && !targetGroup.deletedMemberIds.includes(localDelId)) {
+            targetGroup.deletedMemberIds.push(localDelId);
+          }
+        });
+
+        if (targetGroup.deletedMemberIds.length > 0) {
+          const hasAnyFinancialRecord = (memberId) => {
+            const inExp = (targetGroup.expenses || []).some(
+              (e) =>
+                e.payerId === memberId ||
+                (e.participants || []).includes(memberId) ||
+                (e.customExtras && Number(e.customExtras[memberId]) > 0)
+            );
+            const inTopup = (targetGroup.poolTopups || []).some((t) => t.contributor === memberId);
+            return inExp || inTopup;
+          };
+
+          targetGroup.members = (targetGroup.members || []).filter((m) => {
+            if (m.id === 'u_me') return true;
+            const isMarkedDeleted =
+              targetGroup.deletedMemberIds.includes(m.id) ||
+              (m.handle && targetGroup.deletedMemberIds.includes(m.handle));
+            if (!isMarkedDeleted) return true;
+            // 帳目安全鎖：若該成員在合併後的帳單中有任何財務紀錄，強制保留以防總帳失衡
+            return hasAnyFinancialRecord(m.id);
+          });
+        }
+
+        if (
+          !targetGroup.poolHolderId ||
+          !targetGroup.members.some((m) => m.id === targetGroup.poolHolderId)
+        ) {
+          targetGroup.poolHolderId = (targetGroup.members[0] && targetGroup.members[0].id) || 'u_me';
+        }
+
+        window.appState.currentGroupId = targetGroup.id;
+        ensureGroupPoolBalances(targetGroup);
+
+        // 同步完成後隱藏未同步提醒條並立即寫入本地 IndexedDB 快照
+        const banner = document.getElementById('unsyncedChangesBanner');
+        if (banner) banner.classList.add('hidden');
+        markAppStateDirty(true, false);
+        renderAll();
+
+        showToast(
+          `🎉 已同步 ${senderName} 的帳目（${isNewGroup ? '新入團' : `新增 ${addedExpCount} 筆消費 / ${addedTopupCount} 筆公數`}${updatedExpCount > 0 ? ` / 更新 ${updatedExpCount} 筆` : ''}）！`
+        );
+        return true;
+      } catch (err) {
+        console.warn('[GroupSync] 解析同步連結失敗:', err);
+        showToast('❌ 同步連結格式無效或未完整複製');
+        return false;
+      }
+    }
+
+    // ========================================================================
+    // 13. [任務 2、任務 3C、任務 7] 桌面快捷鍵安裝、全域向右拉動手勢引擎與支持開發者模組
+    // ========================================================================
+    let deferredPwaInstallPrompt = null;
+
+    function isRunningStandalonePwa() {
+      return (
+        (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) ||
+        window.navigator.standalone === true
+      );
+    }
+
+    function updatePwaInstallBtnVisibility() {
+      const btn = document.getElementById('pwaInstallHeaderBtn');
+      if (!btn) return;
+      if (isRunningStandalonePwa()) {
+        btn.classList.add('hidden');
+      } else {
+        btn.classList.remove('hidden');
+      }
+    }
+
+    function initPwaInstallButton() {
+      updatePwaInstallBtnVisibility();
+
+      window.addEventListener('beforeinstallprompt', (e) => {
+        e.preventDefault();
+        deferredPwaInstallPrompt = e;
+        updatePwaInstallBtnVisibility();
+      });
+
+      window.addEventListener('appinstalled', () => {
+        deferredPwaInstallPrompt = null;
+        updatePwaInstallBtnVisibility();
+        showToast('🎉 《混賬》已成功加到手機主畫面！');
+      });
+
+      if (window.matchMedia) {
+        window.matchMedia('(display-mode: standalone)').addEventListener('change', updatePwaInstallBtnVisibility);
+      }
+    }
+
+    async function handleInstallPwaClick() {
+      if (isRunningStandalonePwa()) {
+        updatePwaInstallBtnVisibility();
+        return;
+      }
+      if (deferredPwaInstallPrompt) {
+        deferredPwaInstallPrompt.prompt();
+        const { outcome } = await deferredPwaInstallPrompt.userChoice;
+        if (outcome === 'accepted') {
+          deferredPwaInstallPrompt = null;
+          updatePwaInstallBtnVisibility();
+        }
+        return;
+      }
+      showHelpTip(
+        '📲 一鍵變成桌面全螢幕 App',
+        '將《混賬》變成桌面快捷鍵後，可享全螢幕秒開、離線記帳，且頂部「📲 變身App」按鈕會自動隱藏：\n\n🍎 iPhone (Safari)：\n1. 點擊瀏覽器底部「分享 📤」按鈕\n2. 往下滑點選「加入主畫面 ➕」➔ 按右上角「新增」\n\n🤖 Android (Chrome)：\n1. 點擊右上角「⋮」選單\n2. 點選「安裝應用程式」或「加到主畫面」'
+      );
+    }
+
+    function initSwipeRightToRevealEngine() {
+      let swipeTargetWrap = null;
+      let startX = 0;
+      let startY = 0;
+      let isTracking = false;
+
+      document.addEventListener('pointerdown', (e) => {
+        const clickedWrap = e.target.closest('.swipe-item-wrap');
+        document.querySelectorAll('.swipe-item-wrap.swiped-right').forEach((el) => {
+          if (el !== clickedWrap) el.classList.remove('swiped-right');
+        });
+
+        if (!clickedWrap || e.target.closest('button')) {
+          isTracking = false;
+          return;
+        }
+        swipeTargetWrap = clickedWrap;
+        startX = e.clientX;
+        startY = e.clientY;
+        isTracking = true;
+      });
+
+      document.addEventListener('pointermove', (e) => {
+        if (!isTracking || !swipeTargetWrap) return;
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+
+        if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 12) {
+          isTracking = false;
+          return;
+        }
+        if (dx > 28 && Math.abs(dx) > Math.abs(dy) * 1.3) {
+          swipeTargetWrap.classList.add('swiped-right');
+          isTracking = false;
+        } else if (dx < -20 && Math.abs(dx) > Math.abs(dy)) {
+          swipeTargetWrap.classList.remove('swiped-right');
+          isTracking = false;
+        }
+      });
+
+      const stopTrack = () => {
+        isTracking = false;
+        swipeTargetWrap = null;
+      };
+      document.addEventListener('pointerup', stopTrack);
+      document.addEventListener('pointercancel', stopTrack);
+    }
+
+
   </script>
 </body>
 </html>

@@ -1,30 +1,27 @@
 // ============================================================================
-// 《混賬》(Messy Split) v7.2 - 純前端三層收據掃描引擎 (ocr-scanner.js)
-// 審計強化內容：
-// 1. [效能] 建立內嵌 Blob Web Worker + Transferable ArrayBuffer (零拷貝)，將 530 萬像素二值化運算移出主執行緒，消除 UI 卡頓
-// 2. [功能] 支援 createImageBitmap({ imageOrientation: 'from-image' }) 自動修正手機直拍收據之 EXIF 旋轉方向
-// 3. [資安] 鎖定 Tesseract.js 版本號 (v5.1.1)、強制設定 crossOrigin = 'anonymous' 與選用 SRI 雜湊驗證
-// 4. [法律] 內建 Tesseract.js (Apache License 2.0) 開源授權標示與辨識誤差免責聲明
+// 《混賬》(Messy Split) v7.4 - 純前端三層收據掃描引擎 (ocr-scanner.js)
+// 強化內容：
+// 1. [韓文動態字庫] 自動偵測當前群組幣別 (KRW)，按需動態載入 Tesseract 'kor' 韓文語言包，免改動主程式
+// 2. [新幣別與全形正規化] 全面支援 EUR (€) 與 KRW (₩ / 원 / 합계) 空白容錯、韓文日期 (년/월/일) 與全形數字轉換
+// 3. [效能與 iOS 相容] 內嵌 Blob Web Worker + Transferable ArrayBuffer 零拷貝二值化，延遲釋放 URL 防 iOS WebKit 失敗
+// 4. [功能與法規] 支援 createImageBitmap EXIF 自動轉正，鎖定 Tesseract.js v5.1.1 並附帶 Apache License 2.0 授權標示
 // ============================================================================
 
 const OCRScanner = (() => {
   'use strict';
 
   const MAX_WIDTH = 1400;
-  const MAX_HEIGHT = 3800; // 避免超長小票爆記憶體
+  const MAX_HEIGHT = 3800;
   const PAD = 20;
 
-  // 鎖定明確版本號，防止 CDN 浮動版本遭注入惡意程式碼
   const TESSERACT_CDN_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
-
-  // 開源授權與免責聲明常數 (符合 Apache License 2.0 規範)
   const OPEN_SOURCE_NOTICE =
     'OCR Engine powered by Tesseract.js (Apache License 2.0, Copyright Naptha / Jerome Wu).';
   const OCR_DISCLAIMER =
     'OCR 辨識結果僅供輔助輸入參考，儲存前請自行核對單據金額。';
 
   // ==========================================================================
-  // 背景像素二值化 Web Worker (使用 Transferable Objects 零拷貝傳輸)
+  // 背景像素二值化 Web Worker (Transferable Objects 零拷貝傳輸)
   // ==========================================================================
   let binarizationWorker = null;
   let workerJobId = 0;
@@ -69,7 +66,12 @@ const OCRScanner = (() => {
       const blob = new Blob([workerCode], { type: 'application/javascript' });
       const url = URL.createObjectURL(blob);
       binarizationWorker = new Worker(url);
-      URL.revokeObjectURL(url);
+      // 延遲釋放 Blob URL，避免 iOS WebKit 背景執行緒尚未完成讀取即被撤銷
+      setTimeout(() => {
+        try {
+          URL.revokeObjectURL(url);
+        } catch (_) {}
+      }, 3000);
 
       binarizationWorker.onmessage = (e) => {
         const { jobId, buffer } = e.data;
@@ -81,7 +83,6 @@ const OCRScanner = (() => {
       };
 
       binarizationWorker.onerror = (err) => {
-        console.warn('[OCR Worker] 執行異常，自動切換主執行緒兜底', err);
         for (const [, resolver] of pendingWorkerJobs.entries()) {
           resolver.reject(err);
         }
@@ -93,15 +94,11 @@ const OCRScanner = (() => {
       };
 
       return binarizationWorker;
-    } catch (err) {
-      console.warn('[OCR] 無法建立 Blob Worker，改用主執行緒處理', err);
+    } catch (_) {
       return null;
     }
   }
 
-  /**
-   * 主執行緒二值化兜底函式（當環境不支援 Web Worker 時自動接手）
-   */
   function binarizeOnMainThread(data) {
     const totalPixels = data.length / 4;
     let luminanceSum = 0;
@@ -126,9 +123,6 @@ const OCRScanner = (() => {
     }
   }
 
-  /**
-   * 執行影像自適應二值化：優先使用零拷貝 Web Worker，失敗時無縫退回主執行緒
-   */
   async function applyAdaptiveBinarization(ocrCtx, width, height) {
     try {
       const imgData = ocrCtx.getImageData(0, 0, width, height);
@@ -146,7 +140,6 @@ const OCRScanner = (() => {
           ocrCtx.putImageData(outImgData, 0, 0);
           return;
         } catch (_) {
-          // 若 Worker 傳遞失敗，重新取得 ImageData 並由主執行緒完成
           const fallbackImgData = ocrCtx.getImageData(0, 0, width, height);
           binarizeOnMainThread(fallbackImgData.data);
           ocrCtx.putImageData(fallbackImgData, 0, 0);
@@ -161,9 +154,6 @@ const OCRScanner = (() => {
     }
   }
 
-  /**
-   * 讀取影像並自動套用 EXIF 旋轉方向校正
-   */
   async function loadOrientedImageSource(fileOrBlob) {
     if (typeof createImageBitmap === 'function') {
       try {
@@ -208,7 +198,6 @@ const OCRScanner = (() => {
     let { width, height } = loaded;
 
     try {
-      // 等比縮放 + 超長截斷
       if (width > maxWidth) {
         height = Math.round((height * maxWidth) / width);
         width = maxWidth;
@@ -218,7 +207,6 @@ const OCRScanner = (() => {
         height = MAX_HEIGHT;
       }
 
-      // (A) 原色存檔畫布
       const archiveCanvas = document.createElement('canvas');
       archiveCanvas.width = width;
       archiveCanvas.height = height;
@@ -226,7 +214,6 @@ const OCRScanner = (() => {
       if (!archiveCtx) throw new Error('Canvas 不支援');
       archiveCtx.drawImage(loaded.source, 0, 0, width, height);
 
-      // (B) OCR 高對比畫布
       const ocrCanvas = document.createElement('canvas');
       ocrCanvas.width = width + PAD * 2;
       ocrCanvas.height = height + PAD * 2;
@@ -251,7 +238,6 @@ const OCRScanner = (() => {
             quality
           );
         };
-        // 優先 WebP，不支援則退回 JPEG
         tryToBlob('image/webp', 0.78, () => tryToBlob('image/jpeg', 0.78, null));
       });
     } finally {
@@ -260,8 +246,41 @@ const OCRScanner = (() => {
   }
 
   // ==========================================================================
-  // Layer 2：按需載入本地 Tesseract.js v5.1.1 (含 CORS 與選用 SRI 驗證)
+  // Layer 2：按需載入本地 Tesseract.js v5.1.1 與智能語系決策 (支援韓文 kor)
   // ==========================================================================
+  function resolveOcrLanguages(options = {}) {
+    if (typeof options.lang === 'string' && options.lang.trim()) {
+      return options.lang.trim();
+    }
+
+    let groupCurr = options.currency || '';
+    let mainCurr = '';
+
+    try {
+      if (!groupCurr && typeof window !== 'undefined' && window.appState) {
+        const state = window.appState;
+        mainCurr = state.mainCurrency || 'HKD';
+        const grp =
+          (Array.isArray(state.groups) &&
+            state.groups.find((g) => g.id === state.currentGroupId)) ||
+          (Array.isArray(state.groups) ? state.groups[0] : null);
+        if (grp) {
+          groupCurr = grp.currency || '';
+          mainCurr = grp.mainCurrency || mainCurr;
+        }
+      }
+    } catch (_) {}
+
+    // 當群組外幣或主貨幣為 KRW (韓元) 時，動態掛載 kor 韓文訓練集
+    if (groupCurr === 'KRW' || mainCurr === 'KRW') {
+      return 'eng+kor+chi_tra';
+    }
+    if (groupCurr === 'EUR' || groupCurr === 'USD') {
+      return 'eng+chi_tra';
+    }
+    return 'eng+chi_tra+jpn';
+  }
+
   async function loadTesseractOnDemand(options = {}) {
     if (window.Tesseract && typeof window.Tesseract.recognize === 'function') {
       return window.Tesseract;
@@ -287,10 +306,19 @@ const OCRScanner = (() => {
   }
 
   // ==========================================================================
-  // Layer 3：免金鑰關鍵字錨點解析 (令和年份、多幣別優先序、排除電話找贖干擾)
+  // Layer 3：免金鑰關鍵字錨點解析 (支援 HKD / JPY / TWD / USD / EUR / KRW)
   // ==========================================================================
+  function normalizeFullWidthChars(str) {
+    return String(str || '')
+      .replace(/[０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
+      .replace(/，/g, ',')
+      .replace(/．/g, '.')
+      .replace(/￥/g, '¥')
+      .replace(/￦/g, '₩');
+  }
+
   function parseReceiptTextKeyless(rawText, fallbackFileName = '') {
-    const cleanText = String(rawText || '').trim();
+    const cleanText = normalizeFullWidthChars(rawText).trim();
     const lines = cleanText
       .split(/\r?\n/)
       .map((l) => l.replace(/\s+/g, ' ').trim())
@@ -306,8 +334,9 @@ const OCRScanner = (() => {
         reiwaMatch[3]
       ).padStart(2, '0')}`;
     } else {
+      // 支援中/日 (年/月/日) 與韓文 (년/월/일) 及歐美日期格式
       const ymdRegex =
-        /(20\d{2})\s*[-/.年]\s*(0?[1-9]|1[0-2])\s*[-/.月]\s*(0?[1-9]|[12]\d|3[01])日?/;
+        /(20\d{2})\s*[-/.年년]\s*(0?[1-9]|1[0-2])\s*[-/.月월]\s*(0?[1-9]|[12]\d|3[01])[日일.]?/;
       const dmyRegex =
         /(0?[1-9]|[12]\d|3[01])\s*[-/.]\s*(0?[1-9]|1[0-2])\s*[-/.]\s*(20\d{2})/;
       for (const line of lines) {
@@ -330,21 +359,34 @@ const OCRScanner = (() => {
       }
     }
 
-    // 貨幣優先順序：HKD 優先於 JPY，避免 $ 誤判
+    // 支援 6 大幣別優先順序偵測（含韓文 OCR 字元間距容錯）
     let detectedCurrency = 'HKD';
-    if (/(HK\$|HKD|港幣|八達通|Octopus|PayMe|FPS)/i.test(cleanText)) detectedCurrency = 'HKD';
-    else if (/(NT\$|TWD|台幣|統一發票|載具)/i.test(cleanText)) detectedCurrency = 'TWD';
-    else if (/(US\$|USD)/i.test(cleanText)) detectedCurrency = 'USD';
-    else if (/(税込|外税|内税|お買上|領収|円|JPY|¥|￥)/i.test(cleanText)) detectedCurrency = 'JPY';
+    if (/(HK\$|HKD|港幣|港元|八達通|Octopus|PayMe|FPS)/i.test(cleanText)) {
+      detectedCurrency = 'HKD';
+    } else if (/(NT\$|NTD|TWD|台幣|新台幣|統一發票|載具)/i.test(cleanText)) {
+      detectedCurrency = 'TWD';
+    } else if (
+      /(₩|KRW|원|합\s*계|총\s*액|결\s*제\s*금\s*액|받\s*을\s*금\s*액|부\s*가\s*세|영\s*수\s*증|韓元|韓圜)/i.test(
+        cleanText
+      )
+    ) {
+      detectedCurrency = 'KRW';
+    } else if (/(€|EUR|Euro|歐元|歐羅|MwSt|TVA|IVA)/i.test(cleanText)) {
+      detectedCurrency = 'EUR';
+    } else if (/(US\$|USD|美金|美元)/i.test(cleanText)) {
+      detectedCurrency = 'USD';
+    } else if (/(税込|外税|内税|お買上|領収|円|JPY|¥)/i.test(cleanText)) {
+      detectedCurrency = 'JPY';
+    }
 
     const tier1TotalAnchor =
-      /(grand\s*total|net\s*total|amount\s*due|total\s*due|合計|總計|總額|お買上計|税込合計|税込計|實付|應付|結帳金額|刷卡金額)/i;
-    const tier2SubtotalAnchor = /(\btotal\b|小計|subtotal|計)/i;
+      /(grand\s*total|net\s*total|amount\s*due|total\s*due|合\s*計|總\s*計|總\s*額|お買上計|税込合計|税込計|實付|應付|結帳金額|刷卡金額|합\s*계|총\s*액|총\s*금\s*액|결\s*제\s*금\s*액|받\s*을\s*금\s*액|승\s*인\s*금\s*액|gesamt|summe|montant\s*total|totale|importe\s*total)/i;
+    const tier2SubtotalAnchor = /(\btotal\b|小\s*計|subtotal|計|소\s*계)/i;
     const excludeLineAnchor =
-      /(change|お預り|お釣り|找續|找零|cash|現金預かり|tel|phone|電話|fax|會員|積分|point|invoice|單號|收據號碼|table|桌號|檯號|卡號|visa|master|\d+\s*%)/i;
+      /(change|お預り|お釣り|找續|找零|거\s*스\s*름\s*돈|받\s*은\s*돈|cash|現金預かり|tel|phone|電話|전\s*화|fax|會員|積分|point|invoice|單號|收據號碼|사\s*업\s*자|승\s*인\s*번\s*호|table|桌號|檯號|卡號|visa|master|\d+\s*%)/i;
 
     const amountBase =
-      /(?:HK\$|NT\$|US\$|\$|¥|￥)?\s*([0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.([0-9]{1,2}))?\s*円?/g;
+      /(?:HK\$|NT\$|US\$|EUR|KRW|\$|¥|€|₩)?\s*([0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.([0-9]{1,2}))?\s*(?:円|원|EUR|KRW)?/g;
     const candidates = [];
 
     lines.forEach((line, idx) => {
@@ -357,20 +399,25 @@ const OCRScanner = (() => {
       const amountPattern = new RegExp(amountBase.source, 'gi');
       let match;
       while ((match = amountPattern.exec(line)) !== null) {
-        const intPart = match[1].replace(/,/g, '');
+        const rawInt = match[1];
+        const intPart = rawInt.replace(/,/g, '');
         const decPart = match[2] ? `.${match[2]}` : '';
         const val = parseFloat(intPart + decPart);
-        if (isNaN(val) || val <= 0 || val >= 1000000) continue;
+        // 放寬上限至 5,000 萬以支援大額韓元 (KRW) 或日圓帳單
+        if (isNaN(val) || val <= 0 || val >= 50000000) continue;
 
-        const hasCurrencySymbol = /(HK\$|NT\$|US\$|\$|¥|￥|円)/i.test(match[0]);
-        if (!hasCurrencySymbol && val >= 2000 && val <= 2100 && Number.isInteger(val) && !match[2]) {
-          continue;
+        const hasCurrencySymbol = /(HK\$|NT\$|US\$|EUR|KRW|\$|¥|€|₩|円|원)/i.test(match[0]);
+        // 過濾無貨幣符號之年份 (2000-2100) 或無千分位逗號之 8 位數純整數 (如日期 20261024 或電話)
+        if (!hasCurrencySymbol && !match[2] && Number.isInteger(val)) {
+          if (val >= 2000 && val <= 2100) continue;
+          if (!rawInt.includes(',') && intPart.length >= 8) continue;
         }
 
         let score = 10;
         if (isTier1 || isPrevLineTier1) score += 120;
         else if (isTier2) score += 70;
         if (hasCurrencySymbol) score += 30;
+        if (rawInt.includes(',')) score += 15;
         if (idx >= lines.length * 0.45) score += 20;
         if (match[2]) score += 10;
 
@@ -385,9 +432,9 @@ const OCRScanner = (() => {
     }
 
     const skipMerchantAnchor =
-      /^(welcome|歡迎光臨|領収書|領収証|レシート|receipt|tax\s*invoice|正式收據|交易明細|電話|tel|phone|date|日期|時間|time|table|桌號|店番|レジ|責No|\d+[-/]\d+)/i;
+      /^(welcome|歡迎光臨|領収書|領収証|レシート|영\s*수\s*증|receipt|tax\s*invoice|正式收據|交易明細|電話|tel|phone|date|日期|時間|time|table|桌號|店番|レジ|責No|\d+[-/]\d+)/i;
     const merchantKeywordBoost =
-      /(店|餐廳|居酒屋|珈琲|カフェ|拉麵|燒肉|壽司|水產|藥妝|百貨|超市|堂|茶餐廳|冰室|火鍋|酒家|株式會社|マート|ドン・キホーテ|Restaurant|Cafe|Mart|Store)/i;
+      /(店|餐廳|居酒屋|珈琲|カフェ|拉麵|燒肉|壽司|水產|藥妝|百貨|超市|堂|茶餐廳|冰室|火鍋|酒家|株式會社|マート|ドン・キホーテ|식당|갈비|고깃집|카페|커피|마트|백화점|면세점|약국|치킨|편의점|올리브영|Olive\s*Young|Restaurant|Cafe|Mart|Store|Bistro|Brasserie|Bakery|Supermarket)/i;
 
     let detectedMerchant = '';
     let bestMerchantScore = -1;
@@ -423,8 +470,7 @@ const OCRScanner = (() => {
       engine: '🛡️ 本地三層智能解析 (零上雲)',
       rawPreview: lines.slice(0, 8).join(' | '),
       _license: OPEN_SOURCE_NOTICE,
-      _disclaimer: OCR_DISCLAIMER,
-      _debug: { candidates: candidates.slice(0, 5) }
+      _disclaimer: OCR_DISCLAIMER
     };
   }
 
@@ -446,10 +492,11 @@ const OCRScanner = (() => {
     }
 
     try {
-      onProgress('🤖 Layer 2：啟動本地離線 OCR...');
+      const targetLangs = resolveOcrLanguages(options);
+      onProgress(`🤖 Layer 2：啟動本地離線 OCR (${targetLangs})...`);
       const Tesseract = await loadTesseractOnDemand({ sriIntegrity });
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-      const { data } = await Tesseract.recognize(preprocessed.ocrDataUrl, 'eng+chi_tra+jpn', {
+      const { data } = await Tesseract.recognize(preprocessed.ocrDataUrl, targetLangs, {
         logger: (m) => {
           if (m.status === 'recognizing text') {
             onProgress(`🤖 辨識中 (${Math.round((m.progress || 0) * 100)}%)...`);

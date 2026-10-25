@@ -1,11 +1,11 @@
 // ============================================================================
-// 《混賬》(Messy Split) v7.2 - 資料庫與加密金庫模組 (db-crypto.js)
-// 審計強化內容：
-// 1. [資安] PBKDF2 預設迭代次數提升至 OWASP 標準 600,000 次（並向下相容舊版 100,000 次紀錄）
-// 2. [資安] 新增解密錯誤次數統計與指數退避冷卻機制 (Rate Limiting)，防禦自動化暴力破解
-// 3. [資安] 新增 sanitizeVaultPayload()，強制過濾非 https:// 之 PayMe 連結，阻斷 javascript: XSS
-// 4. [效能] ObjectURL 改以 Map 按資源 ID 與 groupId 精確追蹤，重複讀取與完團清理時零記憶體洩漏
-// 5. [穩定] 全面攔截 QuotaExceededError 並提供密碼強度評估工具 evaluatePasswordStrength()
+// 《混賬》(Messy Split) v7.4 - 資料庫與加密金庫模組 (db-crypto.js)
+// 強化內容：
+// 1. [資安強制] 徹底廢除預設密碼 1234；強制要求設定 8 位以上英數混合密碼，且最少包含 1 個英文大寫字元 (A-Z)
+// 2. [資安] PBKDF2 預設迭代次數採用 OWASP 標準 600,000 次（向下相容舊版紀錄讀取）
+// 3. [資安] 解密錯誤次數統計與指數退避冷卻機制 (Rate Limiting)，防禦暴力破解
+// 4. [資安] sanitizeVaultPayload() 強制過濾非 https:// 之 PayMe 連結，阻斷偽協議 XSS
+// 5. [效能] ObjectURL 以 Map 按資源 ID 與 groupId 精確追蹤回收，防止記憶體洩漏
 // ============================================================================
 
 const DBCrypto = (() => {
@@ -17,7 +17,6 @@ const DBCrypto = (() => {
   const STATE_STORE = 'app_state_store';
   const VAULT_RECORD_KEY = 'encrypted_financial_vault';
 
-  // OWASP 2023 PBKDF2-HMAC-SHA256 建議標準為 600,000 次；保留舊版常數供向下相容
   const PBKDF2_ITERATIONS = 600000;
   const LEGACY_PBKDF2_ITERATIONS = 100000;
   const SALT_BYTE_LENGTH = 16;
@@ -25,11 +24,8 @@ const DBCrypto = (() => {
   const MAX_BLOB_SIZE = 15 * 1024 * 1024; // 15MB
 
   let dbInstance = null;
-
-  // 追蹤所有已建立之 ObjectURL：url -> { id, groupId }
   const activeObjectURLMap = new Map();
 
-  // 防暴力破解狀態追蹤
   let failedUnlockCount = 0;
   let unlockCooldownUntil = 0;
 
@@ -38,7 +34,6 @@ const DBCrypto = (() => {
       try {
         if (await navigator.storage.persisted()) return true;
         const granted = await navigator.storage.persist();
-        console.log(`[DBCrypto] 永久儲存: ${granted ? '✅ 已鎖定' : '⚠️ 系統管理'}`);
         return granted;
       } catch (e) {
         console.warn('[DBCrypto] persist 失敗', e);
@@ -59,7 +54,6 @@ const DBCrypto = (() => {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = (e) => {
         const db = e.target.result;
-        console.log(`[DBCrypto] onupgradeneeded v${DB_VERSION}`);
         if (!db.objectStoreNames.contains(MEDIA_STORE)) {
           const s = db.createObjectStore(MEDIA_STORE, { keyPath: 'id' });
           s.createIndex('by_group', 'groupId', { unique: false });
@@ -82,7 +76,6 @@ const DBCrypto = (() => {
       req.onsuccess = (e) => {
         dbInstance = e.target.result;
         dbInstance.onversionchange = () => {
-          console.warn('[DBCrypto] 版本變更，關閉舊連線');
           try {
             dbInstance.close();
           } catch (_) {}
@@ -90,10 +83,7 @@ const DBCrypto = (() => {
         };
         resolve(dbInstance);
       };
-      req.onerror = (e) => {
-        console.error('[DBCrypto] 開啟失敗', e.target.error);
-        reject(e.target.error);
-      };
+      req.onerror = (e) => reject(e.target.error);
     });
   }
 
@@ -102,22 +92,48 @@ const DBCrypto = (() => {
   }
 
   /**
-   * 評估金庫密碼強度：建議至少 8 位且包含英數混合，並標示是否為預設弱密碼 '1234'
+   * 嚴格評估金庫密碼強度：
+   * 必須為 8 位或以上英數混合，且最少包含 1 個英文大寫字元 (A-Z) 與 1 個數字 (0-9)
    */
   function evaluatePasswordStrength(password) {
     const str = String(password ?? '');
-    const isDefaultPin = str === '1234';
+    const hasMinLength = str.length >= 8;
+    const hasUpper = /[A-Z]/.test(str);
     const hasLetter = /[A-Za-z]/.test(str);
-    const hasDigit = /\d/.test(str);
-    const isStrong = str.length >= 8 && hasLetter && hasDigit && !isDefaultPin;
+    const hasDigit = /[0-9]/.test(str);
+    const isStrong = hasMinLength && hasUpper && hasLetter && hasDigit;
+
+    const missing = [];
+    if (!hasMinLength) missing.push('至少 8 個字元');
+    if (!hasUpper) missing.push('最少 1 個英文大楷 (A-Z)');
+    if (!hasDigit) missing.push('最少 1 個數字 (0-9)');
+
     return {
-      validMinLength: str.length >= 4,
-      isDefaultPin,
+      validMinLength: hasMinLength,
+      hasUpper,
+      hasDigit,
       isStrong,
       recommendation: isStrong
-        ? '密碼強度良好'
-        : '建議設定至少 8 位英數混合密碼，以防止備份檔遭離線暴力破解'
+        ? '密碼強度符合安全規範（8 位以上英數混合且含英文大楷）'
+        : `密碼未達標，尚缺：${missing.join('、')}`
     };
+  }
+
+  /**
+   * 檢查 IndexedDB 中是否已建立加密收款金庫
+   */
+  async function hasEncryptedVault() {
+    try {
+      const db = await openDB();
+      return await new Promise((resolve) => {
+        const tx = db.transaction([STATE_STORE], 'readonly');
+        const req = tx.objectStore(STATE_STORE).get(VAULT_RECORD_KEY);
+        req.onsuccess = () => resolve(!!req.result);
+        req.onerror = () => resolve(false);
+      });
+    } catch (_) {
+      return false;
+    }
   }
 
   /**
@@ -134,7 +150,6 @@ const DBCrypto = (() => {
       } else if (/^payme\.hsbc\//i.test(link)) {
         clean.paymeLink = 'https://' + link;
       } else {
-        console.warn('[DBCrypto] 已攔截非 https:// 協定之收款連結');
         clean.paymeLink = '';
       }
     }
@@ -151,7 +166,7 @@ const DBCrypto = (() => {
     const now = Date.now();
     if (now < unlockCooldownUntil) {
       const waitSec = Math.ceil((unlockCooldownUntil - now) / 1000);
-      throw new Error(`嘗試次數過多，請等待 ${waitSec} 秒後再試`);
+      throw new Error(`密碼錯誤次數過多，請等待 ${waitSec} 秒後再試`);
     }
   }
 
@@ -192,7 +207,7 @@ const DBCrypto = (() => {
   }
 
   // ==========================================================================
-  // ObjectURL 精確追蹤與回收管理 (依資源 id 與 groupId 分類，徹底防止記憶體洩漏)
+  // ObjectURL 精確追蹤與回收管理
   // ==========================================================================
   function trackObjectURL(url, id = null, groupId = null) {
     if (id) {
@@ -239,15 +254,12 @@ const DBCrypto = (() => {
   }
 
   // ==========================================================================
-  // 個人收款金庫加解密 (PBKDF2 600,000 次 + AES-GCM 256-bit)
+  // 個人收款金庫加解密 (強制 8 位以上英數混合 + 至少 1 大寫英文)
   // ==========================================================================
   async function saveEncryptedVault(password, vaultData) {
     const strength = evaluatePasswordStrength(password);
-    if (!strength.validMinLength) {
-      throw new Error('金庫密碼至少需 4 位字元');
-    }
     if (!strength.isStrong) {
-      console.warn('[DBCrypto] 資安提示：', strength.recommendation);
+      throw new Error(strength.recommendation);
     }
 
     const sanitizedData = sanitizeVaultPayload(vaultData);
@@ -288,6 +300,10 @@ const DBCrypto = (() => {
 
   async function unlockEncryptedVault(password) {
     checkUnlockRateLimit();
+
+    if (!password) {
+      throw new Error('EMPTY_VAULT_PASSWORD');
+    }
 
     const db = await openDB();
     const record = await new Promise((resolve, reject) => {
@@ -366,8 +382,9 @@ const DBCrypto = (() => {
 
   async function saveEncryptedQRBlob(id, qrBlob, password) {
     if (!(qrBlob instanceof Blob)) throw new Error('必須是 Blob 物件');
-    if (!password || String(password).length < 4) {
-      throw new Error('加密收款 QR 需要至少 4 位金庫密碼');
+    const strength = evaluatePasswordStrength(password);
+    if (!strength.isStrong) {
+      throw new Error(strength.recommendation);
     }
     if (qrBlob.size > MAX_BLOB_SIZE) {
       throw new Error(`圖片超過 ${MAX_BLOB_SIZE / 1024 / 1024}MB 上限`);
@@ -442,7 +459,6 @@ const DBCrypto = (() => {
 
   async function purgeGroupMediaBlobs(groupId) {
     const db = await openDB();
-    // 同步釋放該群組所有已建立的預覽圖 ObjectURL，消除記憶體洩漏
     revokeGroupObjectURLs(groupId);
 
     return new Promise((resolve, reject) => {
@@ -479,6 +495,7 @@ const DBCrypto = (() => {
     initPersistentStorage,
     openDB,
     evaluatePasswordStrength,
+    hasEncryptedVault,
     sanitizeVaultPayload,
     saveEncryptedVault,
     unlockEncryptedVault,
